@@ -126,3 +126,33 @@ error-session = the secure session expired
 error-protocol = the keyring service sent an unexpected reply
 error-service = the keyring service reported an error ({ $name })
 error-crypto = decryption failed
+
+## Secret
+secret-title = Secret
+secret-hidden = Hidden. Nothing is retrieved until you choose Reveal or Copy.
+secret-retrieving = Retrieving…
+secret-reveal = Reveal
+secret-hide = Hide
+secret-copy = Copy
+secret-copy-exact = Copy exact text
+secret-empty = This secret is empty.
+secret-control-note = Contains line breaks or other control characters, shown here as escapes. Copy uses the exact stored text.
+secret-binary = Binary content ({ $bytes } bytes); viewing is not supported in this release.
+secret-binary-no-copy = Binary content can't be copied in this release.
+secret-hides-in = Hides in { $seconds } s · { $content_type }
+secret-unknown-type = unknown type
+secret-failed = Could not retrieve the secret: { $reason }
+secret-copied = Secret copied. Keybox will clear it from the clipboard after { $seconds } seconds unless something else was copied since.
+secret-clipboard-cleared = The copied secret was cleared from the clipboard.
+copy-control-title = Copy text with hidden characters?
+copy-control-body = This secret contains line breaks or other control characters. Keybox will copy it exactly as stored, including those characters.
+copy-control-confirm = Copy exact text
+
+## Settings
+settings = Settings
+settings-menu = Settings…
+settings-secrets = Secrets
+settings-reveal-duration = Hide revealed secrets after
+settings-seconds = { $seconds } seconds
+settings-clipboard = Clipboard
+settings-clipboard-body = After you copy a secret, Keybox clears it from the clipboard after { $seconds } seconds, but only if the clipboard still holds exactly that secret. Keybox can only check the clipboard while its window is focused: if you switch away, the check happens when you return to Keybox. Clipboard managers and other apps may keep their own copies, which Keybox cannot remove.

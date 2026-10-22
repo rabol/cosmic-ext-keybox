@@ -69,6 +69,28 @@ Consequences for Keybox:
 The integration tests use a fake KDE prompter to cover successful unlock,
 retry, rejection and the no-answer case.
 
+## Clipboard on COSMIC Wayland
+
+Tested 2026-10-22 on COSMIC (cosmic-comp, Arch) with libcosmic `430f3d4`,
+which uses `window_clipboard` over the standard Wayland data device.
+
+| Scenario | Result |
+| --- | --- |
+| Copy text, including newlines and a NUL character | Clipboard holds the exact text |
+| Clear after 30 s while focused, clipboard unchanged | Cleared |
+| Clear after 30 s while focused, other text copied since | Left alone |
+| Timer runs out while Keybox is unfocused | Check waits; cleared on next focus if still ours |
+
+Keybox gets no notification when another client takes the selection, and a
+Wayland client can only read the selection reliably while focused. So
+clearing is best effort: Keybox keeps a salted hash of what it copied (not
+the text), reads the clipboard when the timer has run out and the window is
+focused, and clears it only on a match. The Settings page states these
+limits. Clipboard managers may keep copies Keybox cannot remove.
+
+The unfocused case was exercised by simulating focus loss inside Keybox;
+real focus changes still need a manual check.
+
 ## GNOME Keyring
 
 Not yet tested. Required integration target before the MVP.

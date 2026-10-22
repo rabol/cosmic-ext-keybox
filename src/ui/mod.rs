@@ -4,6 +4,7 @@
 
 #[cfg(debug_assertions)]
 mod dev;
+mod secrets;
 mod view;
 
 use std::collections::{HashMap, HashSet};
@@ -23,6 +24,8 @@ use keybox::backend::{
 };
 use keybox::model::{ConnectionState, Store, display_line};
 
+use secrets::{ClipboardGuard, Intent, SecretSlot, SecretState};
+
 use crate::config::Config;
 use crate::fl;
 
@@ -30,11 +33,13 @@ const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const APP_ICON: &[u8] = include_bytes!("../../resources/icons/hicolor/scalable/apps/icon.svg");
 /// Collapse bursts of change signals (a lock emits one per item).
 const REFRESH_DELAY: Duration = Duration::from_millis(150);
-/// When to suggest that no unlock prompt may appear.
 /// Below this window width (logical pixels) the entry list and the details
 /// are shown one at a time.
 const TWO_PANE_MIN_WIDTH: f32 = 960.0;
+/// When to suggest that no unlock prompt may appear.
 const UNLOCK_HINT_DELAY: Duration = Duration::from_secs(10);
+/// Choices for how long a revealed secret stays visible, in seconds.
+const REVEAL_CHOICES: [u32; 4] = [10, 30, 60, 120];
 
 /// Launch flags. Keybox takes no arguments; single-instance mode needs the type.
 #[derive(Debug, Clone, Default)]
@@ -49,6 +54,9 @@ pub struct App {
     core: cosmic::Core,
     about: About,
     config: Config,
+    config_handler: Option<cosmic_config::Config>,
+    context_page: ContextPage,
+    reveal_options: Vec<String>,
     nav: nav_bar::Model,
     key_binds: HashMap<menu::KeyBind, MenuAction>,
     toasts: widget::Toasts<Message>,
@@ -65,6 +73,12 @@ pub struct App {
     search_id: widget::Id,
     show_technical: bool,
     window_width: f32,
+    window_focused: bool,
+
+    secret: SecretState,
+    clipboard: Option<ClipboardGuard>,
+    /// Reveal or copy to resume once an unlock completes.
+    after_unlock: Option<(ObjectId, Intent)>,
 
     pending_refresh: PendingRefresh,
     unlock: Option<PendingUnlock>,
@@ -94,6 +108,13 @@ struct PendingUnlock {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Dialog {
     ConfirmLock(ObjectId),
+    ConfirmCopy(ObjectId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextPage {
+    About,
+    Settings,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +133,17 @@ pub enum Message {
     Back,
     ToggleTechnical,
 
+    RevealSecret,
+    CopySecret,
+    HideSecret,
+    SecretFetched(u64, SecretSlot),
+    ConfirmCopy(ObjectId),
+    CancelCopy,
+    Tick,
+    WindowFocus(bool),
+    ClipboardChecked(u64, Option<bool>),
+    RevealCheck(ObjectId, Result<ItemInfo, Error>),
+
     OpenSearch,
     SearchInput(String),
     CloseSearch,
@@ -126,7 +158,8 @@ pub enum Message {
     CloseDialog,
 
     Key(Modifiers, Key),
-    ShowAbout,
+    ToggleContextPage(ContextPage),
+    SetRevealChoice(usize),
     LaunchUrl(String),
     CloseToast(widget::ToastId),
     UpdateConfig(Config),
@@ -140,6 +173,7 @@ pub enum Message {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
     About,
+    Settings,
     Refresh,
     Search,
     Lock,
@@ -152,7 +186,8 @@ impl menu::action::MenuAction for MenuAction {
 
     fn message(&self) -> Message {
         match self {
-            Self::About => Message::ShowAbout,
+            Self::About => Message::ToggleContextPage(ContextPage::About),
+            Self::Settings => Message::ToggleContextPage(ContextPage::Settings),
             Self::Refresh => Message::Refresh,
             Self::Search => Message::OpenSearch,
             Self::Lock => Message::RequestLock,
@@ -185,16 +220,25 @@ impl cosmic::Application for App {
             .links([(fl!("repository"), REPOSITORY)])
             .license(env!("CARGO_PKG_LICENSE"));
 
-        let config = cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
-            .map(|context| match Config::get_entry(&context) {
+        let config_handler = cosmic_config::Config::new(Self::APP_ID, Config::VERSION).ok();
+        let config = config_handler
+            .as_ref()
+            .map(|context| match Config::get_entry(context) {
                 Ok(config) | Err((_, config)) => config,
             })
             .unwrap_or_default();
+        let reveal_options = REVEAL_CHOICES
+            .iter()
+            .map(|s| fl!("settings-seconds", seconds = s))
+            .collect();
 
         let mut app = Self {
             core,
             about,
             config,
+            config_handler,
+            context_page: ContextPage::About,
+            reveal_options,
             nav: nav_bar::Model::default(),
             key_binds: key_binds(),
             toasts: widget::Toasts::new(Message::CloseToast),
@@ -207,6 +251,10 @@ impl cosmic::Application for App {
             search_id: widget::Id::unique(),
             show_technical: false,
             window_width: f32::MAX,
+            window_focused: true,
+            secret: SecretState::Hidden,
+            clipboard: None,
+            after_unlock: None,
             pending_refresh: PendingRefresh::default(),
             unlock: None,
             verify_locked: None,
@@ -239,11 +287,18 @@ impl cosmic::Application for App {
         if !self.core.window.show_context {
             return None;
         }
-        Some(context_drawer::about(
-            &self.about,
-            |url| Message::LaunchUrl(url.to_string()),
-            Message::ShowAbout,
-        ))
+        Some(match self.context_page {
+            ContextPage::About => context_drawer::about(
+                &self.about,
+                |url| Message::LaunchUrl(url.to_string()),
+                Message::ToggleContextPage(ContextPage::About),
+            ),
+            ContextPage::Settings => context_drawer::context_drawer(
+                view::settings(self),
+                Message::ToggleContextPage(ContextPage::Settings),
+            )
+            .title(fl!("settings")),
+        })
     }
 
     fn dialog(&self) -> Option<Element<'_, Message>> {
@@ -265,9 +320,19 @@ impl cosmic::Application for App {
                     modifiers,
                     ..
                 }) if status == event::Status::Ignored => Some(Message::Key(modifiers, key)),
+                cosmic::iced::Event::Window(cosmic::iced::window::Event::Focused) => {
+                    Some(Message::WindowFocus(true))
+                }
+                cosmic::iced::Event::Window(cosmic::iced::window::Event::Unfocused) => {
+                    Some(Message::WindowFocus(false))
+                }
                 _ => None,
             }),
         ];
+        if self.needs_tick() {
+            subscriptions
+                .push(cosmic::iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
+        }
         if let Some(client) = &self.client {
             subscriptions.push(Subscription::run_with(
                 EventsKey(client.clone()),
@@ -278,7 +343,9 @@ impl cosmic::Application for App {
     }
 
     fn on_escape(&mut self) -> Task<cosmic::Action<Message>> {
-        if self.dialog.take().is_some() {
+        if self.dialog.is_some() {
+            self.cancel_copy();
+            self.dialog = None;
             return Task::none();
         }
         if self.search.is_some() {
@@ -286,6 +353,7 @@ impl cosmic::Application for App {
         }
         if self.single_pane() && self.selected_item.is_some() {
             self.selected_item = None;
+            self.hide_secret();
         }
         Task::none()
     }
@@ -303,6 +371,7 @@ impl cosmic::Application for App {
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<cosmic::Action<Message>> {
         self.nav.activate(id);
         self.selected_item = None;
+        self.hide_secret();
         self.show_technical = false;
         self.update_title()
     }
@@ -434,10 +503,25 @@ impl cosmic::Application for App {
                 if self.selected_item.as_ref() != Some(&id) {
                     self.show_technical = false;
                 }
+                self.hide_secret_unless(Some(&id));
                 self.selected_item = Some(id);
             }
 
-            Message::Back => self.selected_item = None,
+            Message::Back => {
+                self.selected_item = None;
+                self.hide_secret();
+            }
+
+            Message::RevealSecret => return self.request_secret(Intent::Reveal),
+            Message::CopySecret => return self.request_secret(Intent::Copy),
+            Message::HideSecret => self.hide_secret(),
+            Message::SecretFetched(op, slot) => return self.on_secret_fetched(op, &slot),
+            Message::ConfirmCopy(item) => return self.confirm_copy(&item),
+            Message::CancelCopy => self.cancel_copy(),
+            Message::Tick => return self.tick(),
+            Message::WindowFocus(focused) => return self.on_focus_changed(focused),
+            Message::ClipboardChecked(op, ours) => return self.on_clipboard_checked(op, ours),
+            Message::RevealCheck(item, result) => self.on_reveal_check(&item, result),
 
             Message::ToggleTechnical => self.show_technical = !self.show_technical,
 
@@ -490,34 +574,9 @@ impl cosmic::Application for App {
             }
 
             Message::Unlock => {
-                let (Some(client), Some(collection)) =
-                    (self.client.clone(), self.active_collection_id())
-                else {
-                    return Task::none();
-                };
-                if self.unlock.is_some() {
-                    return Task::none();
+                if let Some(collection) = self.active_collection_id() {
+                    return self.start_unlock(collection);
                 }
-                self.next_op += 1;
-                let op = self.next_op;
-                let target = collection.clone();
-                // TODO: pass a window identifier once libcosmic can export one on Wayland.
-                let (task, handle) = cosmic::task::future(async move {
-                    let result = client.unlock(std::slice::from_ref(&target), None).await;
-                    Message::UnlockFinished(op, result)
-                })
-                .abortable();
-                self.unlock = Some(PendingUnlock {
-                    op,
-                    collection,
-                    handle,
-                    show_hint: false,
-                });
-                let hint = cosmic::task::future(async move {
-                    tokio::time::sleep(UNLOCK_HINT_DELAY).await;
-                    Message::UnlockHint(op)
-                });
-                return Task::batch([task, hint]);
             }
 
             Message::UnlockHint(op) => {
@@ -529,6 +588,7 @@ impl cosmic::Application for App {
             }
 
             Message::CancelUnlock => {
+                self.after_unlock = None;
                 if let Some(unlock) = self.unlock.take() {
                     // Dropping the request dismisses the provider's prompt.
                     unlock.handle.abort();
@@ -540,12 +600,19 @@ impl cosmic::Application for App {
                 let Some(unlock) = self.unlock.take_if(|u| u.op == op) else {
                     return Task::none();
                 };
+                let resume = self.after_unlock.take();
                 match result {
                     Ok(_) => {
-                        return Task::batch([
+                        let mut tasks = vec![
                             self.load_collections(false),
                             self.load_items(&unlock.collection),
-                        ]);
+                        ];
+                        if let Some((item, intent)) = resume
+                            && self.selected_item.as_ref() == Some(&item)
+                        {
+                            tasks.push(self.request_secret(intent));
+                        }
+                        return Task::batch(tasks);
                     }
                     Err(Error::PromptDismissed) => return self.toast(fl!("unlock-cancelled")),
                     Err(error) => return self.operation_failed(&error),
@@ -562,8 +629,21 @@ impl cosmic::Application for App {
                 }
             }
 
-            Message::ShowAbout => {
-                self.core.window.show_context = !self.core.window.show_context;
+            Message::ToggleContextPage(page) => {
+                if self.context_page == page {
+                    self.core.window.show_context = !self.core.window.show_context;
+                } else {
+                    self.context_page = page;
+                    self.core.window.show_context = true;
+                }
+            }
+
+            Message::SetRevealChoice(index) => {
+                if let (Some(&seconds), Some(handler)) =
+                    (REVEAL_CHOICES.get(index), self.config_handler.as_ref())
+                {
+                    let _ = self.config.set_reveal_seconds(handler, seconds);
+                }
             }
 
             Message::LaunchUrl(url) => {
@@ -604,8 +684,38 @@ impl App {
         )
     }
 
+    fn start_unlock(&mut self, collection: ObjectId) -> Task<cosmic::Action<Message>> {
+        let Some(client) = self.client.clone() else {
+            return Task::none();
+        };
+        if self.unlock.is_some() {
+            return Task::none();
+        }
+        self.next_op += 1;
+        let op = self.next_op;
+        let target = collection.clone();
+        // TODO: pass a window identifier once libcosmic can export one on Wayland.
+        let (task, handle) = cosmic::task::future(async move {
+            let result = client.unlock(std::slice::from_ref(&target), None).await;
+            Message::UnlockFinished(op, result)
+        })
+        .abortable();
+        self.unlock = Some(PendingUnlock {
+            op,
+            collection,
+            handle,
+            show_hint: false,
+        });
+        let hint = cosmic::task::future(async move {
+            tokio::time::sleep(UNLOCK_HINT_DELAY).await;
+            Message::UnlockHint(op)
+        });
+        Task::batch([task, hint])
+    }
+
     /// Drops the client and everything derived from it.
     fn disconnect(&mut self, state: ConnectionState) {
+        self.hide_secret();
         if let Some(unlock) = self.unlock.take() {
             unlock.handle.abort();
         }
@@ -667,6 +777,7 @@ impl App {
         generation: u64,
         event: ServiceEvent,
     ) -> Task<cosmic::Action<Message>> {
+        let check = self.check_secret_on_event(&event);
         let pending = &mut self.pending_refresh;
         match event {
             ServiceEvent::OwnerChanged => {
@@ -704,13 +815,14 @@ impl App {
             }
         }
         if self.pending_refresh.scheduled {
-            return Task::none();
+            return check;
         }
         self.pending_refresh.scheduled = true;
-        cosmic::task::future(async move {
+        let flush = cosmic::task::future(async move {
             tokio::time::sleep(REFRESH_DELAY).await;
             Message::FlushRefresh(generation)
-        })
+        });
+        Task::batch([check, flush])
     }
 
     /// Rebuilds the keyring sidebar, keeping the active keyring if it still exists.
@@ -764,6 +876,7 @@ impl App {
     fn drop_missing_selection(&mut self) {
         if self.selected_item.is_some() && self.selected_item_info().is_none() {
             self.selected_item = None;
+            self.hide_secret();
         }
     }
 
@@ -870,8 +983,23 @@ impl App {
             Step::Lock => self.update(Message::RequestLock),
             Step::Confirm => match self.dialog.clone() {
                 Some(Dialog::ConfirmLock(id)) => self.update(Message::ConfirmLock(id)),
+                Some(Dialog::ConfirmCopy(id)) => self.update(Message::ConfirmCopy(id)),
                 None => Task::none(),
             },
+            Step::Reveal => self.update(Message::RevealSecret),
+            Step::Copy => self.update(Message::CopySecret),
+            Step::Hide => self.update(Message::HideSecret),
+            Step::Focus(focused) => self.update(Message::WindowFocus(focused)),
+            Step::Settings => self.update(Message::ToggleContextPage(ContextPage::Settings)),
+            Step::RevealChoice(index) => self.update(Message::SetRevealChoice(index)),
+            Step::ClipSet(text) => cosmic::iced::clipboard::write(text),
+            Step::ClipIs(expected) => cosmic::iced::clipboard::read().map(move |content| {
+                eprintln!(
+                    "KEYBOX_DEV_SCRIPT: clipboard equals {expected:?}: {}",
+                    content.as_deref() == Some(expected.as_str())
+                );
+                cosmic::Action::None
+            }),
             Step::Escape => cosmic::Application::on_escape(self),
             Step::Back => self.update(Message::Back),
             Step::Technical => self.update(Message::ToggleTechnical),

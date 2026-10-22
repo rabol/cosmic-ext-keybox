@@ -13,8 +13,10 @@ use cosmic::widget::{self, menu};
 use keybox::backend::{CollectionInfo, Error, ItemInfo};
 use keybox::model::{ConnectionState, Load, display_line};
 
-use super::{App, Dialog, MenuAction, Message, collection_name, error_reason};
+use super::secrets::SecretState;
+use super::{App, Dialog, MenuAction, Message, REVEAL_CHOICES, collection_name, error_reason};
 use crate::fl;
+use keybox::secret::SecretValue;
 
 /// Longest label shown in lists.
 const LIST_LABEL_CHARS: usize = 120;
@@ -66,7 +68,10 @@ pub fn menu_bar(app: &App) -> Element<'_, Message> {
             menu::root(fl!("menu-view")).apply(Element::from),
             menu::items(
                 &app.key_binds,
-                vec![item(fl!("about"), MenuAction::About, true)],
+                vec![
+                    item(fl!("settings-menu"), MenuAction::Settings, true),
+                    item(fl!("about"), MenuAction::About, true),
+                ],
             ),
         ),
     ])
@@ -152,7 +157,46 @@ pub fn dialog(app: &App) -> Option<Element<'_, Message>> {
                     .into(),
             )
         }
+        Dialog::ConfirmCopy(id) => Some(
+            widget::dialog()
+                .title(fl!("copy-control-title"))
+                .body(fl!("copy-control-body"))
+                .icon(widget::icon::from_name("edit-copy-symbolic").size(64))
+                .primary_action(
+                    widget::button::suggested(fl!("copy-control-confirm"))
+                        .on_press(Message::ConfirmCopy(id.clone())),
+                )
+                .secondary_action(
+                    widget::button::standard(fl!("cancel")).on_press(Message::CancelCopy),
+                )
+                .into(),
+        ),
     }
+}
+
+pub fn settings(app: &App) -> Element<'_, Message> {
+    let selected = REVEAL_CHOICES
+        .iter()
+        .position(|&s| s == app.config.reveal_seconds);
+    widget::column::with_capacity(2)
+        .push(
+            widget::settings::section()
+                .title(fl!("settings-secrets"))
+                .add(widget::settings::flex_item(
+                    fl!("settings-reveal-duration"),
+                    widget::dropdown(&app.reveal_options, selected, Message::SetRevealChoice),
+                )),
+        )
+        .push(
+            widget::settings::section()
+                .title(fl!("settings-clipboard"))
+                .add(widget::text::body(fl!(
+                    "settings-clipboard-body",
+                    seconds = super::secrets::CLIPBOARD_CLEAR_AFTER.as_secs()
+                ))),
+        )
+        .spacing(16)
+        .into()
 }
 
 pub fn main(app: &App) -> Element<'_, Message> {
@@ -532,6 +576,8 @@ fn details_pane(app: &App) -> Element<'_, Message> {
         )));
     }
 
+    column = column.push(secret_section(app));
+
     let mut info = widget::settings::section()
         .add(widget::settings::item(
             fl!("details-keyring"),
@@ -626,6 +672,101 @@ fn details_pane(app: &App) -> Element<'_, Message> {
         .padding([12, 16])
         .apply(widget::scrollable)
         .height(Length::Fill)
+        .into()
+}
+
+/// The Secret section of the details pane. The secret is never selectable
+/// text, so copies go through Copy and its clipboard clearing.
+fn secret_section(app: &App) -> Element<'_, Message> {
+    let selected = app.selected_item.as_ref();
+    let state = match &app.secret {
+        state if state.item() == selected => state,
+        _ => &SecretState::Hidden,
+    };
+    let fetching = matches!(state, SecretState::Fetching { .. });
+    let waiting = fetching || app.unlock.is_some();
+
+    let reveal = widget::button::standard(fl!("secret-reveal"))
+        .on_press_maybe((!waiting).then_some(Message::RevealSecret));
+    let hide = widget::button::standard(fl!("secret-hide")).on_press(Message::HideSecret);
+    let copy = |label: String, enabled: bool| {
+        widget::button::standard(label)
+            .leading_icon(widget::icon::from_name("edit-copy-symbolic"))
+            .on_press_maybe((enabled && !waiting).then_some(Message::CopySecret))
+    };
+
+    let mut body = widget::column::with_capacity(3).spacing(8);
+    let mut buttons = widget::row::with_capacity(2).spacing(8);
+
+    match state {
+        SecretState::Hidden | SecretState::AwaitingCopyConfirm { .. } => {
+            body = body.push(widget::text::body(fl!("secret-hidden")));
+            buttons = buttons.push(reveal).push(copy(fl!("secret-copy"), true));
+        }
+        SecretState::Fetching { .. } => {
+            body = body.push(widget::text::body(fl!("secret-retrieving")));
+            buttons = buttons.push(reveal).push(copy(fl!("secret-copy"), false));
+        }
+        SecretState::Failed { error, .. } => {
+            body = body.push(widget::text::body(fl!(
+                "secret-failed",
+                reason = error_reason(error)
+            )));
+            buttons = buttons.push(reveal).push(copy(fl!("secret-copy"), true));
+        }
+        SecretState::Shown {
+            value,
+            content_type,
+            expires_at,
+            ..
+        } => {
+            let remaining = expires_at
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs()
+                + 1;
+            let content_type =
+                display_line(Some(content_type), 100).unwrap_or_else(|| fl!("secret-unknown-type"));
+            match value {
+                SecretValue::Text(text) => {
+                    if text.is_empty() {
+                        body = body.push(widget::text::body(fl!("secret-empty")));
+                    } else {
+                        body = body.push(secret_text(text.expose().to_owned()));
+                    }
+                    buttons = buttons.push(hide).push(copy(fl!("secret-copy"), true));
+                }
+                SecretValue::TextWithControl(text) => {
+                    body = body
+                        .push(secret_text(text.escaped().expose().to_owned()))
+                        .push(widget::text::caption(fl!("secret-control-note")));
+                    buttons = buttons
+                        .push(hide)
+                        .push(copy(fl!("secret-copy-exact"), true));
+                }
+                SecretValue::Binary { len } => {
+                    body = body.push(widget::text::body(fl!("secret-binary", bytes = len)));
+                    buttons = buttons.push(hide).push(copy(fl!("secret-copy"), false));
+                }
+            }
+            body = body.push(widget::text::caption(fl!(
+                "secret-hides-in",
+                seconds = remaining,
+                content_type = content_type
+            )));
+        }
+    }
+
+    widget::settings::section()
+        .title(fl!("secret-title"))
+        .add(body.push(buttons))
+        .into()
+}
+
+/// Shows secret text in a monospace font. Deliberately not selectable.
+fn secret_text(text: String) -> Element<'static, Message> {
+    widget::text::body(text)
+        .font(cosmic::font::mono())
+        .wrapping(Wrapping::Glyph)
         .into()
 }
 

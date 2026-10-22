@@ -111,6 +111,47 @@ impl SecretValue {
     }
 }
 
+/// Recognises text Keybox put on the clipboard without keeping a copy of
+/// it: a salted SHA-256 hash.
+pub struct ClipboardFingerprint {
+    salt: [u8; 16],
+    digest: [u8; 32],
+}
+
+impl fmt::Debug for ClipboardFingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ClipboardFingerprint([REDACTED])")
+    }
+}
+
+impl ClipboardFingerprint {
+    #[must_use]
+    pub fn new(text: &str) -> Self {
+        let mut salt = [0u8; 16];
+        // Falls back to a fixed salt only if the OS RNG fails; the hash is
+        // still never stored or shown.
+        let _ = getrandom::fill(&mut salt);
+        Self {
+            salt,
+            digest: Self::hash(&salt, text),
+        }
+    }
+
+    /// Whether `text` is exactly what was fingerprinted.
+    #[must_use]
+    pub fn matches(&self, text: &str) -> bool {
+        Self::hash(&self.salt, text) == self.digest
+    }
+
+    fn hash(salt: &[u8; 16], text: &str) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(salt);
+        hasher.update(text.as_bytes());
+        hasher.finalize().into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +197,17 @@ mod tests {
         let value = classify(b"KBX-UNIT-SECRET");
         let printed = format!("{value:?}");
         assert!(!printed.contains("KBX-UNIT-SECRET"), "{printed}");
+    }
+
+    #[test]
+    fn fingerprint_matches_only_identical_text() {
+        let fp = ClipboardFingerprint::new("KBX-UNIT-CLIP");
+        assert!(fp.matches("KBX-UNIT-CLIP"));
+        assert!(!fp.matches("KBX-UNIT-CLIP "));
+        assert!(!fp.matches(""));
+        assert!(!format!("{fp:?}").contains("KBX"));
+        // Salted: two fingerprints of the same text differ internally.
+        let other = ClipboardFingerprint::new("KBX-UNIT-CLIP");
+        assert_ne!(fp.digest, other.digest);
     }
 }

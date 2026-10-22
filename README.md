@@ -9,8 +9,9 @@ Keybox is a client of the freedesktop Secret Service API
 (oo7, GNOME Keyring, KWallet, KeePassXC, ...) and never reads keyring files
 directly. It is not affiliated with System76.
 
-**Status:** early development. Browsing keyrings and entries, search, and
-locking/unlocking work. Revealing and copying secrets is next. See [`specs.md`](specs.md) for the
+**Status:** early development. Browsing keyrings and entries, search,
+locking/unlocking, and revealing or copying a secret work. Not yet qualified
+against GNOME Keyring or other providers. See [`specs.md`](specs.md) for the
 specification and [`docs/providers.md`](docs/providers.md) for tested
 providers.
 

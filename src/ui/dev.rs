@@ -8,7 +8,9 @@
 //!   save screenshots of Keybox's own window (never the whole screen):
 //!   `wait:<ms>`, `keyring:<label>`, `select:<label>`, `search:<text>`,
 //!   `search-close`, `size:<w>x<h>`, `unlock`, `lock`, `confirm`, `escape`,
-//!   `back`, `technical`, `single-pane`, `shot:<file.png>`, `quit`.
+//!   `back`, `technical`, `single-pane`, `reveal`, `copy`, `hide`, `unfocus`,
+//!   `focus`, `clip-is:<text>`, `clip-set:<text>`, `settings`,
+//!   `reveal-choice:<index>`, `shot:<file.png>`, `quit`.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,6 +31,19 @@ pub enum Step {
     Technical,
     /// Force the one-pane layout regardless of window width.
     SinglePane,
+    Reveal,
+    Copy,
+    Hide,
+    /// Simulate the window losing or gaining focus.
+    Focus(bool),
+    /// Print whether the clipboard currently equals this text. Only for
+    /// synthetic fixtures; never prints clipboard contents.
+    ClipIs(String),
+    /// Put other text on the clipboard, as another app would.
+    ClipSet(String),
+    Settings,
+    /// Choose an entry in the reveal-duration dropdown by index.
+    RevealChoice(usize),
     Shot(PathBuf),
     Quit,
 }
@@ -68,6 +83,15 @@ pub fn script() -> Vec<Step> {
                 "back" => Step::Back,
                 "technical" => Step::Technical,
                 "single-pane" => Step::SinglePane,
+                "reveal" => Step::Reveal,
+                "copy" => Step::Copy,
+                "hide" => Step::Hide,
+                "unfocus" => Step::Focus(false),
+                "focus" => Step::Focus(true),
+                "settings" => Step::Settings,
+                "reveal-choice" => Step::RevealChoice(arg.parse().ok()?),
+                "clip-set" => Step::ClipSet(arg.to_owned()),
+                "clip-is" => Step::ClipIs(arg.replace("\\n", "\n").replace("\\0", "\0")),
                 "shot" => Step::Shot(PathBuf::from(arg)),
                 "quit" => Step::Quit,
                 other => {
