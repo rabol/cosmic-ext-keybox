@@ -12,8 +12,16 @@ authors = ["Steen Rabol <steen@rabol.dev>"]
 name = "keybox"
 path = "src/lib.rs"
 
+[[bin]]
+name = "cosmic-ext-keybox"
+path = "src/main.rs"
+
 [dependencies]
 futures-util = "0.3"
+i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
+i18n-embed-fl = "0.10"
+open = "5.3"
+rust-embed = "8.8"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1.48", features = ["rt", "time", "macros", "sync"] }
@@ -23,12 +31,24 @@ zeroize = { version = "1.8", features = ["derive"] }
 
 # Session encryption (dh-ietf1024-sha256-aes128-cbc-pkcs7). Same crate
 # versions as oo7 0.6 so the dependency tree stays shared.
+image = { version = "0.25", default-features = false, features = ["png"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 aes = "0.8"
 cbc = { version = "0.1", features = ["std"] }
 getrandom = "0.4"
 hkdf = "0.12"
 num-bigint-dig = { version = "0.9", features = ["zeroize"] }
 sha2 = "0.10"
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic.git"
+# Pinned for reproducible builds; update deliberately.
+rev = "430f3d48a97d8779f9c1985473912e594ccca1ae"
+features = ["about", "single-instance", "wgpu", "tokio", "a11y", "wayland", "winit", "x11", "dbus-config", "multi-window"]
+default-features = false
+
+[build-dependencies]
+xdgen = "0.1"
 
 [dev-dependencies]
 # Only used by tests to write disposable keyring files for an isolated oo7-daemon.

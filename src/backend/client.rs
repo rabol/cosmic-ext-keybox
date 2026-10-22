@@ -38,8 +38,10 @@ pub enum Bus {
     Address(String),
 }
 
-/// A connection to the active `org.freedesktop.secrets` owner with an
-/// encrypted transfer session. Cheap to clone.
+/// A connection to the active `org.freedesktop.secrets` owner. Cheap to clone.
+///
+/// Browsing works without transfer encryption; retrieving a secret requires
+/// it and never falls back to plaintext.
 ///
 /// All calls go to the owner's unique bus name, so a replacement service
 /// can never receive requests meant for the previous one.
@@ -52,9 +54,14 @@ struct Inner {
     conn: zbus::Connection,
     generation: u64,
     owner: OwnedUniqueName,
-    session: OwnedObjectPath,
-    key: SessionKey,
+    /// The encrypted transfer session, if the service supports one.
+    session: Option<EncryptedSession>,
     provider: Option<Provider>,
+}
+
+struct EncryptedSession {
+    path: OwnedObjectPath,
+    key: SessionKey,
 }
 
 impl std::fmt::Debug for Client {
@@ -76,10 +83,13 @@ pub enum PromptOutcome {
 }
 
 impl Client {
-    /// Connects to the active Secret Service and opens an encrypted session.
+    /// Connects to the active Secret Service and tries to open an encrypted
+    /// transfer session.
     ///
-    /// Uses normal D-Bus activation if the service is not running. Never
-    /// falls back to plaintext transfer.
+    /// Uses normal D-Bus activation if the service is not running. If the
+    /// service does not support encryption, the connection still succeeds
+    /// for browsing, and [`Client::secret`] fails with
+    /// [`Error::EncryptionUnavailable`]. A plaintext session is never opened.
     pub async fn connect(bus: &Bus) -> Result<Self, Error> {
         let builder = match bus {
             Bus::Session => zbus::connection::Builder::session()?,
@@ -106,18 +116,7 @@ impl Client {
         };
 
         let service = service_proxy(&conn, &owner).await?;
-        let pair = KeyPair::generate()?;
-        let input = Value::from(pair.public_key().to_vec());
-        let (output, session) = service
-            .open_session(crypto::ALGORITHM, &input)
-            .await
-            .map_err(|err| match Error::from(err) {
-                Error::Unsupported => Error::EncryptionUnavailable,
-                other => other,
-            })?;
-        let service_public: Vec<u8> = output.try_into().map_err(|_| Error::Protocol)?;
-        let key = pair.derive_key(&service_public)?;
-
+        let session = open_encrypted_session(&service).await?;
         let provider = detect_provider(&dbus, &owner).await;
 
         Ok(Self {
@@ -126,7 +125,6 @@ impl Client {
                 generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
                 owner,
                 session,
-                key,
                 provider,
             }),
         })
@@ -136,6 +134,12 @@ impl Client {
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.inner.generation
+    }
+
+    /// Whether secrets can be retrieved (an encrypted session exists).
+    #[must_use]
+    pub fn is_encrypted(&self) -> bool {
+        self.inner.session.is_some()
     }
 
     /// The provider, when recognised from the owning process.
@@ -250,19 +254,24 @@ impl Client {
     /// returns an empty secret in place of an error.
     pub async fn secret(&self, item: &ObjectId) -> Result<RetrievedSecret, Error> {
         self.check(item)?;
+        let session = self
+            .inner
+            .session
+            .as_ref()
+            .ok_or(Error::EncryptionUnavailable)?;
         let proxy = ItemProxy::builder(&self.inner.conn)
             .destination(self.inner.owner.clone())?
             .path(item.path.clone())?
             .cache_properties(CacheProperties::No)
             .build()
             .await?;
-        let raw = proxy.get_secret(&self.inner.session.as_ref()).await?;
-        if raw.session != self.inner.session {
+        let raw = proxy.get_secret(&session.path.as_ref()).await?;
+        if raw.session != session.path {
             return Err(Error::Protocol);
         }
         // An encrypted session always carries an IV. Empty parameters would
         // mean plaintext, which `decrypt` rejects.
-        let bytes = self.inner.key.decrypt(&raw.parameters, &raw.value)?;
+        let bytes = session.key.decrypt(&raw.parameters, &raw.value)?;
         Ok(RetrievedSecret {
             value: SecretValue::from_bytes(bytes),
             content_type: raw.content_type.clone(),
@@ -324,7 +333,9 @@ impl Client {
     ///
     /// The stream ends when the bus connection is lost; treat that as a
     /// disconnect.
-    pub async fn events(&self) -> Result<impl Stream<Item = ServiceEvent> + Send + 'static, Error> {
+    pub async fn events(
+        &self,
+    ) -> Result<impl Stream<Item = ServiceEvent> + Send + 'static + use<>, Error> {
         let conn = &self.inner.conn;
         let owner = self.inner.owner.clone();
         let from_owner = |interface: &'static str| -> Result<MatchRule<'static>, Error> {
@@ -412,6 +423,26 @@ async fn service_proxy(
         .cache_properties(CacheProperties::No)
         .build()
         .await?)
+}
+
+/// Opens a `dh-ietf1024-sha256-aes128-cbc-pkcs7` session. Returns `None` if
+/// the service does not support that algorithm.
+async fn open_encrypted_session(
+    service: &ServiceProxy<'_>,
+) -> Result<Option<EncryptedSession>, Error> {
+    let pair = KeyPair::generate()?;
+    let input = Value::from(pair.public_key().to_vec());
+    match service.open_session(crypto::ALGORITHM, &input).await {
+        Ok((output, path)) => {
+            let service_public: Vec<u8> = output.try_into().map_err(|_| Error::Protocol)?;
+            let key = pair.derive_key(&service_public)?;
+            Ok(Some(EncryptedSession { path, key }))
+        }
+        Err(err) => match Error::from(err) {
+            Error::Unsupported => Ok(None),
+            other => Err(other),
+        },
+    }
 }
 
 /// Recognises the provider from the owning process name. Display only.

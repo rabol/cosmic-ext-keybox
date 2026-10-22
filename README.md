@@ -9,20 +9,33 @@ Keybox is a client of the freedesktop Secret Service API
 (oo7, GNOME Keyring, KWallet, KeePassXC, ...) and never reads keyring files
 directly. It is not affiliated with System76.
 
-**Status:** early development. The Secret Service backend is in place; the
-COSMIC interface is not built yet. See [`specs.md`](specs.md) for the
+**Status:** early development. Browsing keyrings and entries, search, and
+locking/unlocking work. Revealing and copying secrets is next. See [`specs.md`](specs.md) for the
 specification and [`docs/providers.md`](docs/providers.md) for tested
 providers.
 
 ## Development
 
-Requirements: Rust 1.92+, and for the integration tests `dbus-daemon` and
-`oo7-daemon`.
+Requirements: Rust 1.92+, [`just`](https://github.com/casey/just), and for the
+integration tests `dbus-daemon` and `oo7-daemon`.
 
 ```sh
-cargo test
-cargo clippy --all-targets -- -W clippy::pedantic
+just check              # fmt, clippy (pedantic) and tests
+just build-release
+sudo just install       # binary, desktop entry, metainfo and icon
 ```
+
+### Trying Keybox without your real keyring
+
+```sh
+just dev-env            # prints KEYBOX_DEV_BUS=...
+KEYBOX_DEV_BUS=... cargo run
+```
+
+`dev-env` starts a private bus with a disposable oo7-daemon, synthetic
+keyrings and a fake unlock prompter. `KEYBOX_DEV_BUS` and `KEYBOX_DEV_SCRIPT`
+(scripted steps and screenshots of Keybox's own window, see `src/ui/dev.rs`)
+only exist in debug builds.
 
 The integration tests start a private D-Bus and a private `oo7-daemon` with
 disposable keyrings in a temporary directory. They never touch your session

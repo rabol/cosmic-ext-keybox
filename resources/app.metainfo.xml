@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.rabol.Keybox</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Keybox</name>
+  <summary>Inspect the passwords and secrets stored in your desktop keyring</summary>
+  <description>
+    <p>
+      Keybox shows which application credentials are stored in your desktop
+      keyring and lets you inspect a selected entry. It works with any
+      provider of the freedesktop Secret Service, such as oo7 or GNOME Keyring.
+    </p>
+    <p>Keybox is not affiliated with System76.</p>
+  </description>
+  <developer id="dev.rabol">
+    <name>Steen Rabol</name>
+  </developer>
+  <icon type="remote" width="64" height="64" scale="1">https://github.com/rabol/cosmic-ext-keybox/raw/main/resources/icons/hicolor/scalable/apps/icon.svg</icon>
+  <url type="homepage">https://github.com/rabol/cosmic-ext-keybox</url>
+  <url type="vcs-browser">https://github.com/rabol/cosmic-ext-keybox</url>
+  <url type="bugtracker">https://github.com/rabol/cosmic-ext-keybox/issues</url>
+  <launchable type="desktop-id">dev.rabol.Keybox.desktop</launchable>
+  <provides>
+    <id>com.system76.CosmicApplication</id>
+    <binaries>
+      <binary>cosmic-ext-keybox</binary>
+    </binaries>
+  </provides>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </supports>
+  <categories>
+    <category>COSMIC</category>
+    <category>Utility</category>
+    <category>Security</category>
+  </categories>
+  <keywords>
+    <keyword>keyring</keyword>
+    <keyword>password</keyword>
+    <keyword>secret</keyword>
+    <keyword>credentials</keyword>
+  </keywords>
+  <content_rating type="oars-1.1" />
+</component>

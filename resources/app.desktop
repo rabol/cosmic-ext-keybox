@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Keybox
+Comment=Inspect the passwords and secrets stored in your desktop keyring
+Type=Application
+Icon=dev.rabol.Keybox
+Exec=cosmic-ext-keybox
+Terminal=false
+StartupNotify=true
+Categories=COSMIC;Utility;Security;
+Keywords=keyring;password;passwords;secret;secrets;credentials;keychain;wallet;

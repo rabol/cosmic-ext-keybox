@@ -5,4 +5,5 @@
 #![allow(clippy::missing_errors_doc)]
 
 pub mod backend;
+pub mod model;
 pub mod secret;

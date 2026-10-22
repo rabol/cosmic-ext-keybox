@@ -82,6 +82,7 @@ async fn connects_with_encryption_and_detects_oo7() {
     let env = TestEnv::oo7().await;
     let client = Client::connect(&env.bus()).await.unwrap();
     assert_eq!(client.provider(), Some(Provider::Oo7));
+    assert!(client.is_encrypted());
 
     let again = Client::connect(&env.bus()).await.unwrap();
     assert_ne!(
