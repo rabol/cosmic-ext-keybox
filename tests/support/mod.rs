@@ -36,6 +36,9 @@ pub struct Fixture {
     pub label: String,
     pub attributes: HashMap<String, String>,
     pub secret: Secret,
+    /// Content type to declare instead of the one implied by `secret`
+    /// (D-Bus fixtures only).
+    pub content_type: Option<String>,
 }
 
 fn fixture(label: &str, attrs: &[(&str, &str)], secret: Secret) -> Fixture {
@@ -47,6 +50,7 @@ fn fixture(label: &str, attrs: &[(&str, &str)], secret: Secret) -> Fixture {
             .chain([("kbx-test".to_owned(), "1".to_owned())])
             .collect(),
         secret,
+        content_type: None,
     }
 }
 
@@ -317,6 +321,111 @@ impl TestEnv {
         self.wait_for_owner(true).await;
     }
 
+    /// Starts a private bus plus GNOME Keyring, with the standard fixtures
+    /// created over D-Bus in its login keyring. Returns `None` (skip) when no
+    /// `gnome-keyring-daemon` is available; see [`gnome_keyring_daemon`].
+    pub async fn gnome_keyring() -> Option<Self> {
+        let (daemon, lib_dir) = gnome_keyring_daemon()?;
+        let mut env = Self::bus_only();
+        let d = env.dir.path().to_owned();
+        let mut command = Command::new(daemon);
+        command
+            .args(["--foreground", "--components=secrets", "--unlock"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", d.join("home"))
+            .env("XDG_DATA_HOME", d.join("data"))
+            .env("XDG_CONFIG_HOME", d.join("config"))
+            .env("XDG_CACHE_HOME", d.join("cache"))
+            .env("XDG_RUNTIME_DIR", d.join("runtime"))
+            .env("DBUS_SESSION_BUS_ADDRESS", &env.address)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(
+                std::fs::File::create(d.join("oo7-daemon.log")).unwrap(),
+            ));
+        if let Some(lib_dir) = lib_dir {
+            command.env("LD_LIBRARY_PATH", lib_dir);
+        }
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(LOGIN_PASSWORD.as_bytes())
+            .unwrap();
+        env.daemon = Some(child);
+        env.wait_for_owner(true).await;
+
+        let mut fixtures = login_fixtures();
+        fixtures.push(Fixture {
+            content_type: Some("text/plain; charset=utf8".into()),
+            ..fixture(
+                "KBX Charset",
+                &[("kind", "charset")],
+                Secret::text("KBX-FIXTURE-CHARSET"),
+            )
+        });
+        env.create_items("/org/freedesktop/secrets/aliases/default", fixtures)
+            .await;
+        Some(env)
+    }
+
+    /// Creates items over D-Bus with a plain (test-only) session.
+    pub async fn create_items(&self, collection: &str, items: Vec<Fixture>) {
+        use zbus::zvariant::{OwnedObjectPath, Value};
+        let conn = self.raw_connection().await;
+        let service = "org.freedesktop.secrets";
+        let (_, session): (zbus::zvariant::OwnedValue, OwnedObjectPath) = conn
+            .call_method(
+                Some(service),
+                "/org/freedesktop/secrets",
+                Some("org.freedesktop.Secret.Service"),
+                "OpenSession",
+                &("plain", Value::from("")),
+            )
+            .await
+            .unwrap()
+            .body()
+            .deserialize()
+            .unwrap();
+        for item in items {
+            let content_type = item
+                .content_type
+                .clone()
+                .unwrap_or_else(|| item.secret.content_type().as_str().to_owned());
+            let mut props: HashMap<&str, Value<'_>> = HashMap::new();
+            props.insert(
+                "org.freedesktop.Secret.Item.Label",
+                Value::from(item.label.as_str()),
+            );
+            props.insert(
+                "org.freedesktop.Secret.Item.Attributes",
+                Value::from(item.attributes.clone()),
+            );
+            let secret = (
+                session.clone(),
+                Vec::<u8>::new(),
+                item.secret.as_bytes().to_vec(),
+                content_type,
+            );
+            let reply = conn
+                .call_method(
+                    Some(service),
+                    collection,
+                    Some("org.freedesktop.Secret.Collection"),
+                    "CreateItem",
+                    &(props, secret, false),
+                )
+                .await
+                .unwrap();
+            let (_, prompt): (OwnedObjectPath, OwnedObjectPath) =
+                reply.body().deserialize().unwrap();
+            assert_eq!(prompt.as_str(), "/", "creating a fixture needed a prompt");
+        }
+    }
+
+    /// Stops the provider daemon (oo7 or GNOME Keyring).
     pub async fn stop_oo7(&mut self) {
         if let Some(mut child) = self.daemon.take() {
             let _ = child.kill();
@@ -386,6 +495,25 @@ fn which(name: &str) -> Option<PathBuf> {
         .iter()
         .map(|dir| Path::new(dir).join(name))
         .find(|p| p.is_file())
+}
+
+/// A `gnome-keyring-daemon` to test against: the installed one, or one from
+/// an unpacked package root in `KEYBOX_TEST_GNOME_KEYRING_ROOT` (with its
+/// `usr/lib` for libraries). gnome-keyring conflicts with oo7 on Arch, so
+/// the unpacked form avoids replacing the real provider.
+pub fn gnome_keyring_daemon() -> Option<(PathBuf, Option<PathBuf>)> {
+    if let Ok(root) = std::env::var("KEYBOX_TEST_GNOME_KEYRING_ROOT") {
+        let root = PathBuf::from(root);
+        let daemon = root.join("usr/bin/gnome-keyring-daemon");
+        if daemon.is_file() {
+            return Some((daemon, Some(root.join("usr/lib"))));
+        }
+    }
+    if let Some(daemon) = which("gnome-keyring-daemon") {
+        return Some((daemon, None));
+    }
+    eprintln!("SKIPPED: no gnome-keyring-daemon (set KEYBOX_TEST_GNOME_KEYRING_ROOT)");
+    None
 }
 
 fn oo7_daemon() -> Option<PathBuf> {

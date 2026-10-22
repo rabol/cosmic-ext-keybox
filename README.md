@@ -9,11 +9,58 @@ Keybox is a client of the freedesktop Secret Service API
 (oo7, GNOME Keyring, KWallet, KeePassXC, ...) and never reads keyring files
 directly. It is not affiliated with System76.
 
-**Status:** early development. Browsing keyrings and entries, search,
-locking/unlocking, and revealing or copying a secret work. Not yet qualified
-against GNOME Keyring or other providers. See [`specs.md`](specs.md) for the
+**Status:** early development. Tested with oo7 0.6 and GNOME Keyring 51.1;
+see [`docs/qualification.md`](docs/qualification.md) for what is verified and
+what is still open. See [`specs.md`](specs.md) for the
 specification and [`docs/providers.md`](docs/providers.md) for tested
 providers.
+
+## Using Keybox
+
+- Pick a keyring in the sidebar and an entry in the list. Nothing secret is
+  read until you choose **Reveal** or **Copy**.
+- A revealed secret hides itself after 30 seconds (see Settings), and as soon
+  as you select something else, switch windows, or the entry or keyring
+  changes.
+- **Copy** puts the secret on the clipboard and clears it after 30 seconds if
+  it is still there. Keybox can only check while its window is focused, and
+  clipboard managers may keep their own copy.
+- **Lock keyring** locks it for every app. Unlocking needs the keyring service
+  to show a password prompt, which not every desktop provides (oo7 on COSMIC
+  currently cannot).
+
+### Keyboard
+
+| Keys | Action |
+| --- | --- |
+| Up / Down, Home / End | Move through entries |
+| Ctrl+Page Up / Page Down | Previous / next keyring |
+| Ctrl+Shift+E | Reveal or hide the secret |
+| Ctrl+Shift+C | Copy the secret |
+| Ctrl+F | Search labels and attributes |
+| Ctrl+R, F5 | Refresh |
+| Ctrl+, | Settings |
+| Tab / Shift+Tab | Move focus |
+| Escape | Close search or dialog, go back |
+| Ctrl+Q | Quit |
+
+### Clipboard managers
+
+If you use a clipboard manager, such as the COSMIC clipboard manager applet,
+it records copied secrets in its history. Keybox only clears the system
+clipboard; it cannot remove entries from a clipboard manager's history, and
+those may be kept on disk. If that matters to you:
+
+- prefer **Reveal** over **Copy**, or
+- clear the secret from the clipboard manager's history after pasting, or
+- check whether your clipboard manager can ignore or expire sensitive entries.
+
+### Privacy
+
+Keybox stores no secrets, labels, attributes or search text, makes no network
+requests and writes no logs. Its only saved setting is the reveal duration.
+It never falls back to unencrypted secret transfer. See
+[`docs/qualification.md`](docs/qualification.md) for what has been verified.
 
 ## Development
 
@@ -22,9 +69,16 @@ integration tests `dbus-daemon` and `oo7-daemon`.
 
 ```sh
 just check              # fmt, clippy (pedantic) and tests
+just privacy-check      # opens Keybox on synthetic data; checks for leaks
 just build-release
 sudo just install       # binary, desktop entry, metainfo and icon
 ```
+
+An Arch package recipe is in [`packaging/arch`](packaging/arch).
+
+GNOME Keyring tests run when `gnome-keyring-daemon` is installed, or when
+`KEYBOX_TEST_GNOME_KEYRING_ROOT` points at an unpacked `gnome-keyring`
+package (on Arch it conflicts with `oo7`, so it need not be installed).
 
 ### Trying Keybox without your real keyring
 

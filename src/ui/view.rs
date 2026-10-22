@@ -65,6 +65,24 @@ pub fn menu_bar(app: &App) -> Element<'_, Message> {
             ),
         ),
         menu::Tree::with_children(
+            menu::root(fl!("menu-entry")).apply(Element::from),
+            menu::items(
+                &app.key_binds,
+                vec![
+                    item(
+                        fl!("menu-reveal-hide"),
+                        MenuAction::ToggleReveal,
+                        connected && app.selected_item.is_some(),
+                    ),
+                    item(
+                        fl!("menu-copy-secret"),
+                        MenuAction::CopySecret,
+                        connected && app.selected_item.is_some(),
+                    ),
+                ],
+            ),
+        ),
+        menu::Tree::with_children(
             menu::root(fl!("menu-view")).apply(Element::from),
             menu::items(
                 &app.key_binds,
@@ -424,6 +442,7 @@ fn keyring_pane(app: &App) -> Element<'_, Message> {
                 column
                     .push(entry_list(app, visible.items.into_iter(), false))
                     .apply(widget::scrollable)
+                    .id(app.entries_scroll_id.clone())
                     .height(Length::Fill)
                     .into()
             }
@@ -493,6 +512,7 @@ fn search_pane(app: &App) -> Element<'_, Message> {
 
     column
         .apply(widget::scrollable)
+        .id(app.entries_scroll_id.clone())
         .height(Length::Fill)
         .apply(widget::container)
         .padding([12, 16])

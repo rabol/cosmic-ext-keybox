@@ -53,6 +53,10 @@ run *args:
 dev-env *args:
     cargo run --example dev_env -- {{args}}
 
+# Check that Keybox's output and settings contain no synthetic secrets (opens a window)
+privacy-check:
+    scripts/privacy-check.sh
+
 # Installs files
 install:
     install -Dm0755 {{ cargo-target-dir / 'release' / name }} {{bin-dst}}

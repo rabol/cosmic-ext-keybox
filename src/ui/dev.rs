@@ -10,7 +10,7 @@
 //!   `search-close`, `size:<w>x<h>`, `unlock`, `lock`, `confirm`, `escape`,
 //!   `back`, `technical`, `single-pane`, `reveal`, `copy`, `hide`, `unfocus`,
 //!   `focus`, `clip-is:<text>`, `clip-set:<text>`, `settings`,
-//!   `reveal-choice:<index>`, `shot:<file.png>`, `quit`.
+//!   `reveal-choice:<index>`, `key:<keys>`, `shot:<file.png>`, `quit`.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -42,6 +42,9 @@ pub enum Step {
     /// Put other text on the clipboard, as another app would.
     ClipSet(String),
     Settings,
+    /// Press a key as if no widget handled it, e.g. `down`, `ctrl+pagedown`,
+    /// `ctrl+shift+e`.
+    Key(String),
     /// Choose an entry in the reveal-duration dropdown by index.
     RevealChoice(usize),
     Shot(PathBuf),
@@ -89,6 +92,7 @@ pub fn script() -> Vec<Step> {
                 "unfocus" => Step::Focus(false),
                 "focus" => Step::Focus(true),
                 "settings" => Step::Settings,
+                "key" => Step::Key(arg.to_owned()),
                 "reveal-choice" => Step::RevealChoice(arg.parse().ok()?),
                 "clip-set" => Step::ClipSet(arg.to_owned()),
                 "clip-is" => Step::ClipIs(arg.replace("\\n", "\n").replace("\\0", "\0")),
@@ -118,4 +122,33 @@ pub fn save_png(path: &std::path::Path, shot: &cosmic::iced::window::Screenshot)
             path.display()
         ),
     }
+}
+
+/// Parses `ctrl+shift+e`, `down`, `ctrl+pagedown` into a key press.
+#[must_use]
+pub fn parse_key(
+    spec: &str,
+) -> Option<(
+    cosmic::iced::keyboard::Modifiers,
+    cosmic::iced::keyboard::Key,
+)> {
+    use cosmic::iced::keyboard::{Key, Modifiers, key::Named};
+    let mut modifiers = Modifiers::empty();
+    let mut key = None;
+    for part in spec.split('+') {
+        match part {
+            "ctrl" => modifiers |= Modifiers::CTRL,
+            "shift" => modifiers |= Modifiers::SHIFT,
+            "alt" => modifiers |= Modifiers::ALT,
+            "down" => key = Some(Key::Named(Named::ArrowDown)),
+            "up" => key = Some(Key::Named(Named::ArrowUp)),
+            "home" => key = Some(Key::Named(Named::Home)),
+            "end" => key = Some(Key::Named(Named::End)),
+            "pagedown" => key = Some(Key::Named(Named::PageDown)),
+            "pageup" => key = Some(Key::Named(Named::PageUp)),
+            c if c.chars().count() == 1 => key = Some(Key::Character(c.into())),
+            _ => return None,
+        }
+    }
+    Some((modifiers, key?))
 }

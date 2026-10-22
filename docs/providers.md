@@ -86,14 +86,46 @@ Wayland client can only read the selection reliably while focused. So
 clearing is best effort: Keybox keeps a salted hash of what it copied (not
 the text), reads the clipboard when the timer has run out and the window is
 focused, and clears it only on a match. The Settings page states these
-limits. Clipboard managers may keep copies Keybox cannot remove.
+limits. Clipboard managers may keep copies Keybox cannot remove: on the test
+machine, a clipboard manager applet (`clipboard-manager-git`) is installed,
+and secrets copied from Keybox should be assumed to land in its history.
+The README tells users about this.
 
 The unfocused case was exercised by simulating focus loss inside Keybox;
 real focus changes still need a manual check.
 
-## GNOME Keyring
+## GNOME Keyring 51.1 (Arch package `gnome-keyring 1:51.1-1`)
 
-Not yet tested. Required integration target before the MVP.
+Tested 2026-10-22 against an isolated `gnome-keyring-daemon --foreground
+--components=secrets --unlock` on a private bus (`tests/gnome_keyring.rs`).
+On Arch, the `oo7` package conflicts with `gnome-keyring`, so the daemon was
+run from the signature-verified package unpacked into a temporary directory
+(`KEYBOX_TEST_GNOME_KEYRING_ROOT`), without installing it.
+
+| Scenario | Result |
+| --- | --- |
+| Encrypted session | Works (also validates Keybox's own key exchange) |
+| Provider detection (`gnome-keyring-d`) | Works |
+| Default alias | `login` |
+| `session` collection | Present, with an empty label (shown as "Untitled keyring") |
+| Content types | Reports `text/plain` for every secret, including binary data and items stored as `text/plain; charset=utf8`. Keybox decides text vs. binary from the bytes |
+| Lock | Completes without a prompt; emits `CollectionChanged` |
+| Locked collection metadata | Labels and attributes **stay visible** while locked (unlike oo7) |
+| Unlock without a prompter | Prompt completes as dismissed immediately (oo7 waits forever) |
+| Item order | Not sorted; Keybox sorts by label |
+| Daemon stop | Owner change observed; old paths unusable |
+
+Keybox cannot tell "the user cancelled" from "no prompter available" with
+GNOME Keyring; the message after a dismissed unlock covers both.
+
+## Accessibility (AT-SPI)
+
+Checked 2026-10-22 on COSMIC with libcosmic `430f3d4` (built with its `a11y`
+feature). With `org.a11y.Status.IsEnabled` switched on, Keybox did **not**
+appear on the AT-SPI bus. Neither did other running COSMIC applications
+(cosmic-term, cosmic-settings), although those were started before
+accessibility was enabled. Screen-reader support is therefore unverified and
+should be rechecked with Orca. Keyboard operation was verified separately.
 
 ## KWallet / KDE Secret Service implementation
 

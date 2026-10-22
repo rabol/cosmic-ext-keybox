@@ -71,6 +71,8 @@ pub struct App {
     /// `Some` while the search field is open.
     search: Option<String>,
     search_id: widget::Id,
+    /// The scrollable entry list, for keeping keyboard selection in view.
+    entries_scroll_id: widget::Id,
     show_technical: bool,
     window_width: f32,
     window_focused: bool,
@@ -134,6 +136,7 @@ pub enum Message {
     ToggleTechnical,
 
     RevealSecret,
+    ToggleReveal,
     CopySecret,
     HideSecret,
     SecretFetched(u64, SecretSlot),
@@ -157,7 +160,7 @@ pub enum Message {
     LockFinished(u64, ObjectId, Result<PromptOutcome, Error>),
     CloseDialog,
 
-    Key(Modifiers, Key),
+    Key(Modifiers, Key, Option<keyboard::key::Physical>),
     ToggleContextPage(ContextPage),
     SetRevealChoice(usize),
     LaunchUrl(String),
@@ -174,6 +177,8 @@ pub enum Message {
 pub enum MenuAction {
     About,
     Settings,
+    ToggleReveal,
+    CopySecret,
     Refresh,
     Search,
     Lock,
@@ -188,6 +193,8 @@ impl menu::action::MenuAction for MenuAction {
         match self {
             Self::About => Message::ToggleContextPage(ContextPage::About),
             Self::Settings => Message::ToggleContextPage(ContextPage::Settings),
+            Self::ToggleReveal => Message::ToggleReveal,
+            Self::CopySecret => Message::CopySecret,
             Self::Refresh => Message::Refresh,
             Self::Search => Message::OpenSearch,
             Self::Lock => Message::RequestLock,
@@ -249,6 +256,7 @@ impl cosmic::Application for App {
             selected_item: None,
             search: None,
             search_id: widget::Id::unique(),
+            entries_scroll_id: widget::Id::unique(),
             show_technical: false,
             window_width: f32::MAX,
             window_focused: true,
@@ -318,8 +326,11 @@ impl cosmic::Application for App {
                 cosmic::iced::Event::Keyboard(keyboard::Event::KeyPressed {
                     key,
                     modifiers,
+                    physical_key,
                     ..
-                }) if status == event::Status::Ignored => Some(Message::Key(modifiers, key)),
+                }) if status == event::Status::Ignored => {
+                    Some(Message::Key(modifiers, key, Some(physical_key)))
+                }
                 cosmic::iced::Event::Window(cosmic::iced::window::Event::Focused) => {
                     Some(Message::WindowFocus(true))
                 }
@@ -513,6 +524,16 @@ impl cosmic::Application for App {
             }
 
             Message::RevealSecret => return self.request_secret(Intent::Reveal),
+            Message::ToggleReveal => {
+                if self.selected_item.is_none() {
+                    return Task::none();
+                }
+                if matches!(self.secret, SecretState::Shown { .. }) {
+                    self.hide_secret();
+                } else {
+                    return self.request_secret(Intent::Reveal);
+                }
+            }
             Message::CopySecret => return self.request_secret(Intent::Copy),
             Message::HideSecret => self.hide_secret(),
             Message::SecretFetched(op, slot) => return self.on_secret_fetched(op, &slot),
@@ -621,9 +642,12 @@ impl cosmic::Application for App {
 
             Message::CloseDialog => self.dialog = None,
 
-            Message::Key(modifiers, key) => {
+            Message::Key(modifiers, key, physical) => {
+                if let Some(task) = self.navigation_key(modifiers, &key) {
+                    return task;
+                }
                 for (bind, action) in &self.key_binds {
-                    if bind.matches(modifiers, &key, None) {
+                    if bind.matches(modifiers, &key, physical.as_ref()) {
                         return self.update(menu::action::MenuAction::message(action));
                     }
                 }
@@ -727,6 +751,91 @@ impl App {
         self.dialog = None;
         self.pending_refresh = PendingRefresh::default();
         self.nav.clear();
+    }
+
+    /// Arrow keys move through the shown entries; Ctrl+Page Up/Down switch
+    /// keyrings. Only called for keys no widget handled.
+    fn navigation_key(
+        &mut self,
+        modifiers: Modifiers,
+        key: &Key,
+    ) -> Option<Task<cosmic::Action<Message>>> {
+        use keyboard::key::Named;
+        if self.dialog.is_some() || self.connection != ConnectionState::Connected {
+            return None;
+        }
+        let Key::Named(named) = key else {
+            return None;
+        };
+        if modifiers.control() && !modifiers.shift() && !modifiers.alt() {
+            let step: isize = match named {
+                Named::PageDown => 1,
+                Named::PageUp => -1,
+                _ => return None,
+            };
+            let ids: Vec<_> = self.nav.iter().collect();
+            let current = ids.iter().position(|id| *id == self.nav.active())?;
+            let next = current
+                .checked_add_signed(step)
+                .filter(|n| *n < ids.len())?;
+            return Some(cosmic::Application::on_nav_select(self, ids[next]));
+        }
+        if !modifiers.is_empty() {
+            return None;
+        }
+        let entries = self.visible_entry_ids();
+        if entries.is_empty() {
+            return None;
+        }
+        let current = self
+            .selected_item
+            .as_ref()
+            .and_then(|s| entries.iter().position(|e| e == s));
+        let last = entries.len() - 1;
+        let next = match (named, current) {
+            (Named::ArrowDown, None) | (Named::Home, _) => 0,
+            (Named::ArrowUp, None) | (Named::End, _) => last,
+            (Named::ArrowDown, Some(i)) => (i + 1).min(last),
+            (Named::ArrowUp, Some(i)) => i.saturating_sub(1),
+            _ => return None,
+        };
+        let id = entries[next].clone();
+        let select = cosmic::Application::update(self, Message::SelectItem(id));
+        // Approximate: rows differ in height, but this keeps the selection near view.
+        #[allow(clippy::cast_precision_loss)]
+        let y = if last == 0 {
+            0.0
+        } else {
+            next as f32 / last as f32
+        };
+        let scroll = cosmic::iced::widget::scrollable::snap_to(
+            self.entries_scroll_id.clone(),
+            cosmic::iced::widget::scrollable::RelativeOffset {
+                x: None,
+                y: Some(y),
+            },
+        );
+        Some(Task::batch([select, scroll]))
+    }
+
+    /// Entries in the order the list currently shows them.
+    fn visible_entry_ids(&self) -> Vec<ObjectId> {
+        let Some(store) = self.store.as_ref() else {
+            return Vec::new();
+        };
+        match self.search.as_deref().filter(|q| !q.trim().is_empty()) {
+            Some(query) => store
+                .search(query)
+                .matches
+                .iter()
+                .map(|i| i.id.clone())
+                .collect(),
+            None => self
+                .active_collection_id()
+                .and_then(|c| store.visible_items(&c))
+                .map(|v| v.items.iter().map(|i| i.id.clone()).collect())
+                .unwrap_or_default(),
+        }
     }
 
     /// Whether to show the entry list and details one at a time.
@@ -990,6 +1099,10 @@ impl App {
             Step::Copy => self.update(Message::CopySecret),
             Step::Hide => self.update(Message::HideSecret),
             Step::Focus(focused) => self.update(Message::WindowFocus(focused)),
+            Step::Key(spec) => match dev::parse_key(&spec) {
+                Some((modifiers, key)) => self.update(Message::Key(modifiers, key, None)),
+                None => Task::none(),
+            },
             Step::Settings => self.update(Message::ToggleContextPage(ContextPage::Settings)),
             Step::RevealChoice(index) => self.update(Message::SetRevealChoice(index)),
             Step::ClipSet(text) => cosmic::iced::clipboard::write(text),
@@ -1057,7 +1170,19 @@ fn key_binds() -> HashMap<menu::KeyBind, MenuAction> {
             action,
         )
     };
+    let ctrl_shift = |c: &str, action| {
+        (
+            menu::KeyBind {
+                modifiers: vec![Modifier::Ctrl, Modifier::Shift],
+                key: Key::Character(c.into()),
+            },
+            action,
+        )
+    };
     HashMap::from([
+        ctrl_shift("e", MenuAction::ToggleReveal),
+        ctrl_shift("c", MenuAction::CopySecret),
+        ctrl(",", MenuAction::Settings),
         ctrl("f", MenuAction::Search),
         ctrl("r", MenuAction::Refresh),
         ctrl("q", MenuAction::Quit),
