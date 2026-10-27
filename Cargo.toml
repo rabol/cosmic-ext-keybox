@@ -2,7 +2,7 @@
 name = "cosmic-ext-keybox"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.93"
 license = "GPL-3.0-only"
 description = "Inspect the secrets stored in your desktop keyring"
 repository = "https://github.com/rabol/cosmic-ext-keybox"
@@ -51,7 +51,7 @@ sha2 = "0.10"
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"
 # Pinned for reproducible builds; update deliberately.
-rev = "430f3d48a97d8779f9c1985473912e594ccca1ae"
+rev = "8990a058e1deb8f9f7f4c0a42f6b1362fa1437ec"
 features = ["about", "single-instance", "wgpu", "tokio", "a11y", "wayland", "winit", "x11", "dbus-config", "multi-window"]
 default-features = false
 

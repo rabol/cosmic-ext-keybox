@@ -16,6 +16,11 @@ what is still open. See [`specs.md`](specs.md) for the
 specification and [`docs/providers.md`](docs/providers.md) for tested
 providers.
 
+> **Note:** COSMIC has no keyring password prompt yet, so Keybox shows its own
+> when it unlocks or creates a keyring. It is used only for Keybox's own
+> requests and will be removed once COSMIC provides a prompt. See
+> [Password prompt on COSMIC](#password-prompt-on-cosmic).
+
 ## Using Keybox
 
 - Pick a keyring in the sidebar and an entry in the list. Nothing secret is
@@ -59,8 +64,20 @@ create requests**, and only when no other prompter is installed or running.
 The password goes from Keybox's dialog to the keyring service encrypted, and
 is not kept. Details: [`docs/providers.md`](docs/providers.md#keyboxs-built-in-prompter).
 
+If another prompter is installed, Keybox uses that one instead. In particular
+`gcr-prompter` (Arch package `gcr`, pulled in by `gnome-keyring` and
+`seahorse`) counts, even though it may not appear on COSMIC
+([cosmic-epoch#3453](https://github.com/pop-os/cosmic-epoch/issues/3453)).
+If unlocking waits with no dialog while you use oo7, check whether `gcr` is
+installed.
+
+Other applications are not helped by this: on COSMIC they still cannot unlock
+a keyring themselves. Unlock it in Keybox first.
+
 It is temporary and sits behind the `builtin-prompter` Cargo feature (on by
-default). Build with `--no-default-features` to leave it out.
+default). Build with `--no-default-features` to leave it out. It will be
+removed once COSMIC ships a prompter; the removal steps are in
+[`docs/providers.md`](docs/providers.md#keyboxs-built-in-prompter).
 
 ### Keyboard
 
