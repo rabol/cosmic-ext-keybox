@@ -7,7 +7,7 @@
 //! against a compromised session.
 
 use aes::Aes128;
-use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 use hkdf::Hkdf;
 use num_bigint_dig::BigUint;
 use sha2::Sha256;
@@ -176,7 +176,7 @@ impl SessionKey {
         let mut buffer = Zeroizing::new(value.to_vec());
         let plain_len = cbc::Decryptor::<Aes128>::new_from_slices(self.0.as_ref(), parameters)
             .map_err(|_| CryptoError::InvalidParameters)?
-            .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+            .decrypt_padded::<Pkcs7>(&mut buffer)
             .map_err(|_| CryptoError::Decrypt)?
             .len();
         buffer.truncate(plain_len);
@@ -192,7 +192,7 @@ impl SessionKey {
         let mut out = vec![0u8; (plain.len() / BLOCK_LEN + 1) * BLOCK_LEN];
         let len = cbc::Encryptor::<Aes128>::new_from_slices(self.0.as_ref(), &iv)
             .map_err(|_| CryptoError::InvalidParameters)?
-            .encrypt_padded_b2b_mut::<Pkcs7>(plain, &mut out)
+            .encrypt_padded_b2b::<Pkcs7>(plain, &mut out)
             .map_err(|_| CryptoError::InvalidParameters)?
             .len();
         out.truncate(len);
@@ -258,7 +258,7 @@ mod tests {
         let mut buf = vec![0u8; 32];
         let n = cbc::Encryptor::<Aes128>::new_from_slices(key.bytes(), &iv)
             .unwrap()
-            .encrypt_padded_b2b_mut::<Pkcs7>(plain, &mut buf)
+            .encrypt_padded_b2b::<Pkcs7>(plain, &mut buf)
             .unwrap()
             .len();
         buf.truncate(n);
