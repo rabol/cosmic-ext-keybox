@@ -17,7 +17,8 @@
   <developer id="dev.rabol">
     <name>Steen Rabol</name>
   </developer>
-  <icon type="remote" width="64" height="64" scale="1">https://github.com/rabol/cosmic-ext-keybox/raw/main/resources/icons/hicolor/scalable/apps/icon.svg</icon>
+  <icon type="stock">dev.rabol.Keybox</icon>
+  <icon type="remote" width="64" height="64" scale="1">https://github.com/rabol/cosmic-ext-keybox/raw/v0.1.0/resources/icons/hicolor/scalable/apps/icon.svg</icon>
   <url type="homepage">https://github.com/rabol/cosmic-ext-keybox</url>
   <url type="vcs-browser">https://github.com/rabol/cosmic-ext-keybox</url>
   <url type="bugtracker">https://github.com/rabol/cosmic-ext-keybox/issues</url>
