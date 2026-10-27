@@ -16,14 +16,25 @@ use zeroize::Zeroizing;
 pub const ALGORITHM: &str = "dh-ietf1024-sha256-aes128-cbc-pkcs7";
 
 /// RFC 2409 "Second Oakley Group" (1024-bit MODP), generator 2.
-const PRIME_HEX: &[u8] = b"\
+const PRIME_1024_HEX: &[u8] = b"\
 FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1\
 29024E088A67CC74020BBEA63B139B22514A08798E3404DD\
 EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245\
 E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED\
 EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381\
 FFFFFFFFFFFFFFFF";
-const PRIME_LEN: usize = 128;
+/// RFC 3526 1536-bit MODP group, generator 2. Used by the GNOME prompter
+/// protocol's secret exchange (`[sx-aes-1]`).
+#[cfg(feature = "builtin-prompter")]
+const PRIME_1536_HEX: &[u8] = b"\
+FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1\
+29024E088A67CC74020BBEA63B139B22514A08798E3404DD\
+EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245\
+E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED\
+EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3D\
+C2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F\
+83655D23DCA3AD961C62F356208552BB9ED529077096966D\
+670C354E4ABC9804F1746C08CA237327FFFFFFFFFFFFFFFF";
 const PRIVATE_KEY_LEN: usize = 32;
 const AES_KEY_LEN: usize = 16;
 const IV_LEN: usize = 16;
@@ -41,12 +52,45 @@ pub enum CryptoError {
     Decrypt,
 }
 
+/// A Diffie-Hellman group. Both use generator 2, and the AES key is
+/// HKDF-SHA256 (no salt, no info) of the shared secret padded to the
+/// prime's length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    /// Secret Service transfer sessions.
+    Ietf1024,
+    /// The GNOME prompter's secret exchange.
+    #[cfg(feature = "builtin-prompter")]
+    Ietf1536,
+}
+
+impl Group {
+    fn prime(self) -> BigUint {
+        let hex = match self {
+            Self::Ietf1024 => PRIME_1024_HEX,
+            #[cfg(feature = "builtin-prompter")]
+            Self::Ietf1536 => PRIME_1536_HEX,
+        };
+        BigUint::parse_bytes(hex, 16).expect("constant prime parses")
+    }
+
+    fn len(self) -> usize {
+        match self {
+            Self::Ietf1024 => 128,
+            #[cfg(feature = "builtin-prompter")]
+            Self::Ietf1536 => 192,
+        }
+    }
+}
+
+#[cfg(test)]
 fn prime() -> BigUint {
-    BigUint::parse_bytes(PRIME_HEX, 16).expect("constant prime parses")
+    Group::Ietf1024.prime()
 }
 
 /// Our half of the key exchange. The private exponent is wiped on drop.
 pub struct KeyPair {
+    group: Group,
     private: Zeroizing<BigUint>,
     public: Vec<u8>,
 }
@@ -58,12 +102,23 @@ impl std::fmt::Debug for KeyPair {
 }
 
 impl KeyPair {
+    /// A key pair for a Secret Service transfer session.
     pub fn generate() -> Result<Self, CryptoError> {
+        Self::generate_in(Group::Ietf1024)
+    }
+
+    pub fn generate_in(group: Group) -> Result<Self, CryptoError> {
         let mut bytes = Zeroizing::new([0u8; PRIVATE_KEY_LEN]);
         getrandom::fill(bytes.as_mut()).map_err(|_| CryptoError::Random)?;
         let private = Zeroizing::new(BigUint::from_bytes_be(bytes.as_ref()));
-        let public = BigUint::from(2u32).modpow(&private, &prime()).to_bytes_be();
-        Ok(Self { private, public })
+        let public = BigUint::from(2u32)
+            .modpow(&private, &group.prime())
+            .to_bytes_be();
+        Ok(Self {
+            group,
+            private,
+            public,
+        })
     }
 
     /// The public key to send in `OpenSession`.
@@ -74,7 +129,7 @@ impl KeyPair {
 
     /// Derives the AES key from the service's public key.
     pub fn derive_key(&self, service_public: &[u8]) -> Result<SessionKey, CryptoError> {
-        let p = prime();
+        let p = self.group.prime();
         let theirs = BigUint::from_bytes_be(service_public);
         // Reject degenerate keys (0, 1, p-1, >= p) that would make the shared
         // secret predictable.
@@ -85,8 +140,9 @@ impl KeyPair {
 
         let shared = Zeroizing::new(theirs.modpow(&self.private, &p));
         let shared_bytes = Zeroizing::new(shared.to_bytes_be());
-        let mut ikm = Zeroizing::new([0u8; PRIME_LEN]);
-        ikm[PRIME_LEN - shared_bytes.len()..].copy_from_slice(&shared_bytes);
+        let len = self.group.len();
+        let mut ikm = Zeroizing::new(vec![0u8; len]);
+        ikm[len - shared_bytes.len()..].copy_from_slice(&shared_bytes);
 
         let mut key = Zeroizing::new([0u8; AES_KEY_LEN]);
         Hkdf::<Sha256>::new(None, ikm.as_ref())
@@ -160,6 +216,19 @@ mod tests {
         let ka = a.derive_key(b.public_key()).unwrap();
         let kb = b.derive_key(a.public_key()).unwrap();
         assert_eq!(ka.bytes(), kb.bytes());
+    }
+
+    #[cfg(feature = "builtin-prompter")]
+    #[test]
+    fn prompter_group_round_trip() {
+        let a = KeyPair::generate_in(Group::Ietf1536).unwrap();
+        let b = KeyPair::generate_in(Group::Ietf1536).unwrap();
+        assert!(a.public_key().len() > 128);
+        let ka = a.derive_key(b.public_key()).unwrap();
+        let kb = b.derive_key(a.public_key()).unwrap();
+        assert_eq!(ka.bytes(), kb.bytes());
+        let (iv, ct) = ka.encrypt(b"KBX-UNIT-SX").unwrap();
+        assert_eq!(kb.decrypt(&iv, &ct).unwrap().as_slice(), b"KBX-UNIT-SX");
     }
 
     #[test]

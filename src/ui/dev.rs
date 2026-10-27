@@ -18,6 +18,8 @@
 //!   editor, dialog and write state without any text), and field input:
 //!   `label=<text>`, `secret=<text>`, `attr-key<i>=<text>`,
 //!   `attr-value<i>=<text>`, `dialog=<text>`.
+//! - Built-in password prompt: `password=<text>`, `prompt-submit`,
+//!   `prompt-cancel`.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -70,6 +72,8 @@ pub enum Field {
     AttributeKey(usize),
     AttributeValue(usize),
     Dialog,
+    #[cfg(feature = "builtin-prompter")]
+    Password,
 }
 
 #[must_use]
@@ -95,6 +99,8 @@ pub fn script() -> Vec<Step> {
                     "label" => Field::Label,
                     "secret" => Field::Secret,
                     "dialog" => Field::Dialog,
+                    #[cfg(feature = "builtin-prompter")]
+                    "password" => Field::Password,
                     f => {
                         if let Some(i) = f.strip_prefix("attr-key") {
                             Field::AttributeKey(i.parse().ok()?)
@@ -156,6 +162,14 @@ pub fn script() -> Vec<Step> {
                 "editor-reload" => Step::Message(Box::new(M::EditorReload)),
                 "editor-cancel" => Step::Message(Box::new(M::EditorCancel)),
                 "cancel-write" => Step::Message(Box::new(M::CancelWrite)),
+                #[cfg(feature = "builtin-prompter")]
+                "prompt-submit" => Step::Message(Box::new(M::PasswordPrompt(
+                    super::prompter::PromptMessage::Submit,
+                ))),
+                #[cfg(feature = "builtin-prompter")]
+                "prompt-cancel" => Step::Message(Box::new(M::PasswordPrompt(
+                    super::prompter::PromptMessage::Cancel,
+                ))),
                 other => {
                     eprintln!("KEYBOX_DEV_SCRIPT: unknown step {other:?}");
                     return None;

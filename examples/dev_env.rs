@@ -9,7 +9,8 @@
 //! ```
 //!
 //! The fake prompter accepts the Work keyring password. Arguments: `ignore`
-//! or `reject` change the prompter; `gnome` runs GNOME Keyring instead of
+//! or `reject` change the prompter; `none` runs without any prompter, like
+//! COSMIC (Keybox's built-in prompt then asks); `gnome` runs GNOME Keyring instead of
 //! oo7 (see `KEYBOX_TEST_GNOME_KEYRING_ROOT` in `tests/support`).
 //! Press Enter to stop.
 
@@ -25,6 +26,13 @@ async fn main() {
         };
         println!("KEYBOX_DEV_BUS={}", env.address());
         eprintln!("Isolated GNOME Keyring running. Press Enter to stop.");
+        wait_for_enter().await;
+        stop(env);
+    }
+    if std::env::args().nth(1).as_deref() == Some("none") {
+        let env = support::TestEnv::oo7().await;
+        println!("KEYBOX_DEV_BUS={}", env.address());
+        eprintln!("Isolated keyring service without a prompter. Press Enter to stop.");
         wait_for_enter().await;
         stop(env);
     }

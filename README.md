@@ -26,9 +26,10 @@ providers.
 - **Copy** puts the secret on the clipboard and clears it after 30 seconds if
   it is still there. Keybox can only check while its window is focused, and
   clipboard managers may keep their own copy.
-- **Lock keyring** locks it for every app. Unlocking needs the keyring service
-  to show a password prompt, which not every desktop provides (oo7 on COSMIC
-  currently cannot).
+- **Lock keyring** locks it for every app. Unlocking normally uses the
+  desktop's keyring password prompt. COSMIC has none yet, so Keybox then asks
+  for the password itself (see below). Other apps still cannot unlock a
+  keyring on COSMIC; they wait for a prompt that never appears.
 
 ### Changing entries and keyrings
 
@@ -44,11 +45,22 @@ providers.
 - **Delete** asks for confirmation naming the entry and its keyring.
 - The **Keyring** menu creates, renames and deletes keyrings. Only empty
   keyrings can be deleted, never the default or the session keyring. Creating
-  a keyring needs the keyring service's password prompt, which oo7 on COSMIC
-  currently cannot show; Keybox then waits and lets you cancel.
+  a keyring asks for its password the same way as unlocking.
 - Changing which keyring is the default is not offered: oo7 0.6 does not do it
   reliably (see [`docs/providers.md`](docs/providers.md)).
 - Entries and keyrings must be unlocked before they can be changed.
+
+### Password prompt on COSMIC
+
+Keyring services (oo7, GNOME Keyring) do not draw password dialogs
+themselves; they ask the desktop's prompter. COSMIC does not provide one yet,
+so Keybox includes a stand-in that is used **only for Keybox's own unlock and
+create requests**, and only when no other prompter is installed or running.
+The password goes from Keybox's dialog to the keyring service encrypted, and
+is not kept. Details: [`docs/providers.md`](docs/providers.md#keyboxs-built-in-prompter).
+
+It is temporary and sits behind the `builtin-prompter` Cargo feature (on by
+default). Build with `--no-default-features` to leave it out.
 
 ### Keyboard
 
@@ -114,7 +126,8 @@ KEYBOX_DEV_BUS=... cargo run
 ```
 
 `dev-env` starts a private bus with a disposable oo7-daemon, synthetic
-keyrings and a fake unlock prompter. `KEYBOX_DEV_BUS` and `KEYBOX_DEV_SCRIPT`
+keyrings and a fake unlock prompter (`cargo run --example dev_env none`
+leaves the prompter out, like COSMIC, so Keybox's own prompt is used). `KEYBOX_DEV_BUS` and `KEYBOX_DEV_SCRIPT`
 (scripted steps and screenshots of Keybox's own window, see `src/ui/dev.rs`)
 only exist in debug builds.
 

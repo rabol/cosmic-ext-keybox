@@ -5,6 +5,8 @@
 #[cfg(debug_assertions)]
 mod dev;
 mod editor;
+#[cfg(feature = "builtin-prompter")]
+mod prompter;
 mod secrets;
 mod view;
 
@@ -18,6 +20,7 @@ use cosmic::iced::keyboard::{Key, Modifiers};
 use cosmic::iced::{Subscription, event, keyboard};
 use cosmic::prelude::*;
 use cosmic::widget::{self, about::About, menu, nav_bar};
+use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt, stream};
 
 use keybox::backend::{
@@ -97,6 +100,9 @@ pub struct App {
     /// Keyring to show once the next listing contains it.
     activate_collection: Option<ObjectId>,
     next_op: u64,
+    /// Keybox's own password dialog, when the desktop has no prompter.
+    #[cfg(feature = "builtin-prompter")]
+    password_prompt: Option<prompter::PasswordDialog>,
     #[cfg(debug_assertions)]
     dev_script: std::collections::VecDeque<dev::Step>,
 }
@@ -228,6 +234,8 @@ pub enum Message {
     CloseToast(widget::ToastId),
     UpdateConfig(Config),
     Quit,
+    #[cfg(feature = "builtin-prompter")]
+    PasswordPrompt(prompter::PromptMessage),
     #[cfg(debug_assertions)]
     DevNext,
     #[cfg(debug_assertions)]
@@ -345,6 +353,8 @@ impl cosmic::Application for App {
             write: None,
             activate_collection: None,
             next_op: 0,
+            #[cfg(feature = "builtin-prompter")]
+            password_prompt: None,
             #[cfg(debug_assertions)]
             dev_script: dev::script().into(),
         };
@@ -387,6 +397,10 @@ impl cosmic::Application for App {
     }
 
     fn dialog(&self) -> Option<Element<'_, Message>> {
+        #[cfg(feature = "builtin-prompter")]
+        if let Some(dialog) = self.password_dialog() {
+            return Some(dialog);
+        }
         view::dialog(self)
     }
 
@@ -431,6 +445,10 @@ impl cosmic::Application for App {
     }
 
     fn on_escape(&mut self) -> Task<cosmic::Action<Message>> {
+        #[cfg(feature = "builtin-prompter")]
+        if self.password_prompt.is_some() {
+            return self.on_password_prompt(prompter::PromptMessage::Cancel);
+        }
         if self.dialog.is_some() {
             self.cancel_copy();
             self.dialog = None;
@@ -793,8 +811,16 @@ impl cosmic::Application for App {
                     self.dialog = Some(Dialog::NewKeyring(name));
                     return Task::none();
                 }
-                return self.start_write(false, async move {
-                    WriteDone::KeyringCreated(client.create_collection(&name, None).await)
+                return self.start_write_stream(false, move |op| {
+                    prompting(
+                        &client.clone(),
+                        op,
+                        name.clone(),
+                        move |window| async move {
+                            let result = client.create_collection(&name, window.as_deref()).await;
+                            Message::WriteFinished(op, WriteDone::KeyringCreated(result))
+                        },
+                    )
                 });
             }
 
@@ -910,6 +936,9 @@ impl cosmic::Application for App {
 
             Message::UpdateConfig(config) => self.config = config,
 
+            #[cfg(feature = "builtin-prompter")]
+            Message::PasswordPrompt(message) => return self.on_password_prompt(message),
+
             Message::Quit => {
                 if let Some(id) = self.core.main_window_id() {
                     return cosmic::iced::window::close(id);
@@ -950,12 +979,20 @@ impl App {
         self.next_op += 1;
         let op = self.next_op;
         let target = collection.clone();
-        // TODO: pass a window identifier once libcosmic can export one on Wayland.
-        let (task, handle) = cosmic::task::future(async move {
-            let result = client.unlock(std::slice::from_ref(&target), None).await;
+        let name = self
+            .store
+            .as_ref()
+            .and_then(|s| s.collection(&collection))
+            .map_or_else(|| fl!("keyring-untitled"), collection_name);
+        // TODO: pass a real window identifier once libcosmic can export one
+        // on Wayland. Until then only the built-in prompter gets one.
+        let work = prompting(&client.clone(), op, name, move |window| async move {
+            let result = client
+                .unlock(std::slice::from_ref(&target), window.as_deref())
+                .await;
             Message::UnlockFinished(op, result)
-        })
-        .abortable();
+        });
+        let (task, handle) = cosmic::task::stream(work).abortable();
         self.unlock = Some(PendingUnlock {
             op,
             collection,
@@ -977,13 +1014,24 @@ impl App {
         editor: bool,
         work: impl std::future::Future<Output = WriteDone> + Send + 'static,
     ) -> Task<cosmic::Action<Message>> {
+        self.start_write_stream(editor, move |op| {
+            stream::once(async move { Message::WriteFinished(op, work.await) }).boxed()
+        })
+    }
+
+    /// Like [`App::start_write`], for work that reports progress messages
+    /// before its final [`Message::WriteFinished`].
+    fn start_write_stream(
+        &mut self,
+        editor: bool,
+        work: impl FnOnce(u64) -> BoxStream<'static, Message>,
+    ) -> Task<cosmic::Action<Message>> {
         if self.write.is_some() {
             return Task::none();
         }
         self.next_op += 1;
         let op = self.next_op;
-        let (task, handle) =
-            cosmic::task::future(async move { Message::WriteFinished(op, work.await) }).abortable();
+        let (task, handle) = cosmic::task::stream(work(op)).abortable();
         self.write = Some(PendingWrite {
             op,
             handle,
@@ -1132,6 +1180,10 @@ impl App {
     /// Drops the client and everything derived from it.
     fn disconnect(&mut self, state: ConnectionState) {
         self.hide_secret();
+        #[cfg(feature = "builtin-prompter")]
+        {
+            self.password_prompt = None;
+        }
         if let Some(unlock) = self.unlock.take() {
             unlock.handle.abort();
         }
@@ -1159,6 +1211,10 @@ impl App {
         key: &Key,
     ) -> Option<Task<cosmic::Action<Message>>> {
         use keyboard::key::Named;
+        #[cfg(feature = "builtin-prompter")]
+        if self.password_prompt.is_some() {
+            return None;
+        }
         if self.dialog.is_some()
             || self.editor.is_some()
             || self.connection != ConnectionState::Connected
@@ -1424,6 +1480,27 @@ impl App {
     }
 }
 
+/// Runs work that may make the provider prompt. `work` receives the window
+/// identifier to pass on. With the built-in prompter, Keybox shows its own
+/// password dialog when the desktop has no prompter.
+fn prompting<F>(
+    client: &Client,
+    op: u64,
+    keyring: String,
+    work: impl FnOnce(Option<String>) -> F + Send + 'static,
+) -> BoxStream<'static, Message>
+where
+    F: std::future::Future<Output = Message> + Send + 'static,
+{
+    #[cfg(feature = "builtin-prompter")]
+    return prompter::with_prompter(client.clone(), op, keyring, work).boxed();
+    #[cfg(not(feature = "builtin-prompter"))]
+    {
+        let _ = (client, op, keyring);
+        stream::once(work(None)).boxed()
+    }
+}
+
 fn session_bus() -> Bus {
     #[cfg(debug_assertions)]
     if let Some(address) = dev::bus_override() {
@@ -1547,6 +1624,10 @@ impl App {
                 dev::Field::AttributeKey(i) => Message::EditorAttributeKey(i, text),
                 dev::Field::AttributeValue(i) => Message::EditorAttributeValue(i, text),
                 dev::Field::Dialog => Message::DialogInput(text),
+                #[cfg(feature = "builtin-prompter")]
+                dev::Field::Password => Message::PasswordPrompt(prompter::PromptMessage::Password(
+                    TypedSecret::new(text),
+                )),
             }),
             Step::Reveal => self.update(Message::RevealSecret),
             Step::Copy => self.update(Message::CopySecret),

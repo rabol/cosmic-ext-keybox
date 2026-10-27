@@ -54,6 +54,8 @@ pub struct Client {
 
 struct Inner {
     conn: zbus::Connection,
+    #[cfg(feature = "builtin-prompter")]
+    bus: Bus,
     generation: u64,
     owner: OwnedUniqueName,
     /// The encrypted transfer session, if the service supports one.
@@ -124,6 +126,8 @@ impl Client {
         Ok(Self {
             inner: Arc::new(Inner {
                 conn,
+                #[cfg(feature = "builtin-prompter")]
+                bus: bus.clone(),
                 generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
                 owner,
                 session,
@@ -142,6 +146,18 @@ impl Client {
     #[must_use]
     pub fn is_encrypted(&self) -> bool {
         self.inner.session.is_some()
+    }
+
+    /// The bus this client is connected to.
+    #[cfg(feature = "builtin-prompter")]
+    pub(crate) fn bus(&self) -> &Bus {
+        &self.inner.bus
+    }
+
+    /// The service's unique bus name.
+    #[cfg(feature = "builtin-prompter")]
+    pub(crate) fn owner(&self) -> &OwnedUniqueName {
+        &self.inner.owner
     }
 
     /// The provider, when recognised from the owning process.

@@ -69,6 +69,50 @@ Consequences for Keybox:
 The integration tests use a fake KDE prompter to cover successful unlock,
 retry, rejection and the no-answer case.
 
+### Keybox's built-in prompter
+
+Added 2026-10-27, behind the `builtin-prompter` Cargo feature (default on).
+Upstream status checked the same day: no prompter is planned in any pop-os
+repository; the open report is
+[cosmic-epoch#3453](https://github.com/pop-os/cosmic-epoch/issues/3453).
+
+On COSMIC, oo7 0.6 always uses the GNOME prompter protocol
+(`org.gnome.keyring.internal.Prompter` on `org.gnome.keyring.SystemPrompter`,
+the protocol `gcr-prompter` implements). While one of Keybox's unlock or
+create-keyring requests is pending, Keybox
+(`src/backend/prompter.rs`, `src/ui/prompter.rs`):
+
+1. Checks that the provider is oo7 or GNOME Keyring and that nobody owns
+   `org.gnome.keyring.SystemPrompter` and no service file provides it.
+   Otherwise it steps aside and the real prompter is used.
+2. Takes the name (`DoNotQueue`) on a separate connection and passes a random
+   window identifier, `wayland:keybox-<128-bit hex>`, to the provider's
+   `Prompt` call. oo7 forwards it as the prompt's `caller-window` (oo7 drops
+   identifiers that are not `wayland:` or `x11:`, hence the form).
+3. Accepts calls only from the keyring service's unique name, and answers only
+   prompts whose `caller-window` is that token. Other applications' prompts
+   get no answer, exactly as without Keybox.
+4. Shows its own dialog and replies with the password encrypted by the
+   `[sx-aes-1]` secret exchange: Diffie-Hellman in the RFC 3526 1536-bit
+   group, HKDF-SHA256 of the shared secret padded to 192 bytes, AES-128-CBC.
+   Typed text is kept in wiping buffers. A wrong password makes oo7 send the
+   prompt again with a warning; Keybox shows it again.
+5. Releases the name as soon as the request ends, is cancelled, or fails.
+
+Verified against oo7 0.6.0 in `tests/builtin_prompter.rs`: unlock with a
+wrong then right password, cancel, new keyring password, other applications'
+prompts left alone, calls from other senders rejected, stepping aside for a
+running or activatable prompter, name released afterwards, and no password
+bytes in any `PromptReady` call on the bus.
+
+Not tested: GNOME Keyring through this prompter (it uses the same protocol,
+but whether it forwards `caller-window` is unchecked; if not, Keybox's
+requests simply get no answer, as before).
+
+To remove it once COSMIC has a prompter: delete the two files above and
+`tests/builtin_prompter.rs`, then everything marked
+`cfg(feature = "builtin-prompter")` and the feature in `Cargo.toml`.
+
 ## Changing stored data (management release)
 
 Tested 2026-10-22 with `tests/management.rs` against oo7 0.6.0 and GNOME

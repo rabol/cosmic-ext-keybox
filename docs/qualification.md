@@ -34,6 +34,16 @@ script runner (`src/ui/dev.rs`) against synthetic keyrings.
 | No typed data in logs or preferences | **Done** | `scripts/privacy-check.sh` now creates, edits and deletes entries and keyrings |
 | Visual check of the editor and dialogs | **Open** | The debug screenshots need the Keybox window to be visible on screen |
 
+## Built-in password prompt (2026-10-27)
+
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| Unlock and create keyrings on COSMIC (oo7, no desktop prompter) | **Done** for oo7 | `tests/builtin_prompter.rs`; dialog, retry, cancel and Escape checked with the debug script runner against `dev_env none` |
+| Never answer other applications' prompts | **Done** | Token check and sender check, both tested |
+| Password never in plaintext on the bus | **Done** | Bus-monitor assertion on `PromptReady` |
+| Step aside when a real prompter exists | **Done** | Tested for a running and an activatable prompter |
+| GNOME Keyring through the built-in prompter | **Open** | Same protocol, untested |
+
 ## Still open before an MVP release
 
 - Install for real and check the COSMIC launcher, light theme and icon.

@@ -110,6 +110,7 @@ details-unavailable = Could not read this entry: { $reason }
 ## Lock and unlock
 lock-dialog-title = Lock “{ $keyring }”?
 lock-dialog-body = Apps that use this keyring will not be able to read their passwords until it is unlocked again. Unlocking needs the keyring service to show a password prompt, which not every desktop provides.
+lock-dialog-body-builtin = Apps that use this keyring will not be able to read their passwords until it is unlocked again. On desktops without a keyring password prompt, such as COSMIC, apps cannot unlock it themselves; you can unlock it again from Keybox.
 lock-dialog-confirm = Lock keyring
 cancel = Cancel
 unlock-waiting = Waiting for the keyring service to ask for the password…
@@ -245,3 +246,16 @@ keyring-delete-session = The session keyring belongs to the keyring service and 
 keyring-delete-default = The default keyring can't be deleted here.
 keyring-delete-not-empty = Only empty keyrings can be deleted.
 keyring-delete-not-loaded = The keyring's entries have not finished loading.
+
+## Built-in password prompt (used when the desktop has no keyring prompter)
+password-prompt-unlock-title = Unlock “{ $keyring }”
+password-prompt-unlock-body = Enter the password for this keyring.
+password-prompt-new-title = Password for “{ $keyring }”
+password-prompt-new-body = Choose a password for the new keyring. You will need it to unlock the keyring.
+password-prompt-password = Password
+password-prompt-confirm = Confirm password
+password-prompt-mismatch = The passwords do not match.
+password-prompt-wrong = The password was incorrect. Try again.
+password-prompt-unlock = Unlock
+password-prompt-create = Create
+password-prompt-note = Keybox shows this because your desktop has no keyring password prompt. The password goes encrypted to the keyring service and is not kept.

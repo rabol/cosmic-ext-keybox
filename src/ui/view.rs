@@ -201,7 +201,11 @@ pub fn dialog(app: &App) -> Option<Element<'_, Message>> {
             Some(
                 widget::dialog()
                     .title(fl!("lock-dialog-title", keyring = name))
-                    .body(fl!("lock-dialog-body"))
+                    .body(if cfg!(feature = "builtin-prompter") {
+                        fl!("lock-dialog-body-builtin")
+                    } else {
+                        fl!("lock-dialog-body")
+                    })
                     .icon(widget::icon::from_name("changes-prevent-symbolic").size(64))
                     .primary_action(
                         widget::button::destructive(fl!("lock-dialog-confirm"))

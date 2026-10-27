@@ -16,7 +16,15 @@ path = "src/lib.rs"
 name = "cosmic-ext-keybox"
 path = "src/main.rs"
 
+[features]
+default = ["builtin-prompter"]
+# Temporary: Keybox shows its own unlock dialog when the desktop has no
+# keyring prompter (COSMIC today). See docs/providers.md. Remove the feature
+# and everything gated on it once COSMIC ships a prompter.
+builtin-prompter = ["dep:base64"]
+
 [dependencies]
+base64 = { version = "0.22", optional = true }
 futures-util = "0.3"
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"

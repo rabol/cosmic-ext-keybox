@@ -5,6 +5,8 @@
 mod client;
 mod crypto;
 mod error;
+#[cfg(feature = "builtin-prompter")]
+pub mod prompter;
 mod proxy;
 mod types;
 
