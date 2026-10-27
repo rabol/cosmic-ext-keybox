@@ -1,0 +1,29 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: cosmic-ext-keybox
+Upstream-Contact: Steen Rabol <steen@rabol.dev>
+Source: https://github.com/rabol/cosmic-ext-keybox
+
+Files: *
+Copyright: 2026 Steen Rabol
+License: GPL-3.0-only
+
+Files: vendor/*
+Copyright: The authors of each crate, as listed in its Cargo.toml.
+License: MIT AND Apache-2.0 AND MPL-2.0 AND Unicode-3.0 AND Zlib AND ISC AND BSD-3-Clause AND BSD-2-Clause AND Unlicense AND CC0-1.0
+Comment: The Rust crates compiled into the program. THIRD-PARTY-LICENSES.md
+ (installed in /usr/share/doc/cosmic-ext-keybox) lists each crate, its
+ version and license. Where a crate offers a choice, the permissive one is
+ used.
+
+License: GPL-3.0-only
+ This program is free software: you can redistribute it and/or modify it
+ under the terms of the GNU General Public License as published by the Free
+ Software Foundation, version 3.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT
+ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ more details.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 3 can be found in "/usr/share/common-licenses/GPL-3".

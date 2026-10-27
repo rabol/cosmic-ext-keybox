@@ -1,0 +1,32 @@
+Source: cosmic-ext-keybox
+Section: utils
+Priority: optional
+Maintainer: Steen Rabol <steen@rabol.dev>
+Build-Depends:
+ debhelper-compat (= 13),
+ cargo,
+ rustc (>= 1.93),
+ just,
+ pkgconf,
+ libxkbcommon-dev,
+ libwayland-dev,
+ desktop-file-utils,
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+Homepage: https://github.com/rabol/cosmic-ext-keybox
+
+Package: cosmic-ext-keybox
+Architecture: amd64
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+Recommends:
+ gnome-keyring | oo7-daemon,
+ xdg-utils,
+Description: Keyring manager for COSMIC
+ Keybox shows which application credentials are stored in your desktop
+ keyring and lets you inspect, reveal and copy a selected entry, create and
+ edit text entries, delete entries, and manage keyrings. It works with any
+ freedesktop Secret Service provider, such as oo7 or GNOME Keyring.
+ .
+ Made for the COSMIC desktop; not affiliated with System76.

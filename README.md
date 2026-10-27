@@ -132,8 +132,10 @@ just build-release
 sudo just install       # binary, desktop entry, metainfo and icon
 ```
 
-Arch package recipes are in [`packaging/arch`](packaging/arch): `cosmic-ext-keybox`
-builds the tagged release, `cosmic-ext-keybox-git` the latest commit.
+Releases: pushing a tag `v<version>` (made with `just tag <version>`) builds a
+source archive with all crates included, an `.rpm` (Fedora), a `.deb`
+(Debian) and an Arch package, and drafts a GitHub release. See
+[`packaging/README.md`](packaging/README.md).
 
 GNOME Keyring tests run when `gnome-keyring-daemon` is installed, or when
 `KEYBOX_TEST_GNOME_KEYRING_ROOT` points at an unpacked `gnome-keyring`

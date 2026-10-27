@@ -1,0 +1,29 @@
+#!/usr/bin/make -f
+# Built by .github/workflows/release.yml in a Debian testing container,
+# from the source archive with every crate in vendor/, offline.
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --frozen --release
+
+override_dh_auto_test:
+	desktop-file-validate target/xdgen/app.desktop
+
+override_dh_auto_install:
+	just rootdir=$(CURDIR)/debian/cosmic-ext-keybox prefix=/usr install
+	install -Dm644 THIRD-PARTY-LICENSES.md \
+		$(CURDIR)/debian/cosmic-ext-keybox/usr/share/doc/cosmic-ext-keybox/THIRD-PARTY-LICENSES.md
+	install -Dm644 docs/user-guide.md \
+		$(CURDIR)/debian/cosmic-ext-keybox/usr/share/doc/cosmic-ext-keybox/user-guide.md
+
+# vendor/ is part of the source; only the build output goes.
+override_dh_auto_clean:
+	rm -rf target
+
+# dh_clean deletes *.orig and files named core, and vendor/ has both (the
+# crates' Cargo.toml.orig among them). Deleted, cargo's checksum check
+# fails. -X matches anywhere in the path, so vendor/ is left alone.
+override_dh_clean:
+	dh_clean -Xvendor/ -X.orig -Xcore

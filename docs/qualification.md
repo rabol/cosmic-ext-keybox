@@ -53,8 +53,9 @@ Manual checks on a real COSMIC session:
 - Real focus loss: a revealed secret hides when another window is focused;
   a copied secret is cleared on the next focus once the timer has run out.
 - Visual check of the editor and dialogs.
-- Push the tag, fill in the checksum (`updpkgsums`) and build the Arch
-  package from `packaging/arch/cosmic-ext-keybox`.
+- Push the tag; the release workflow builds and checks the .rpm, .deb and
+  Arch packages and drafts the release (see
+  [`packaging/README.md`](../packaging/README.md)).
 
 ## Known limits of 0.1.0
 

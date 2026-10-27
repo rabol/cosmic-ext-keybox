@@ -32,12 +32,22 @@ default: build-release
 clean:
     cargo clean
 
+# Removes vendored dependencies
+clean-vendor:
+    rm -rf .cargo vendor vendor.tar
+
+# `cargo clean` and removes vendored dependencies
+clean-dist: clean clean-vendor
+
 # Compiles with debug profile
 build-debug *args:
     cargo build --locked {{args}}
 
 # Compiles with release profile
 build-release *args: (build-debug '--release' args)
+
+# Compiles release profile with vendored dependencies
+build-vendored *args: vendor-extract (build-release '--frozen --offline' args)
 
 # Runs clippy and the test suite
 check *args:
@@ -67,3 +77,32 @@ install:
 # Uninstalls installed files
 uninstall:
     rm {{bin-dst}} {{desktop-dst}} {{appdata-dst}} {{icon-svg-dst}}
+
+# Regenerates THIRD-PARTY-LICENSES.md from Cargo.lock
+licenses:
+    python3 -I scripts/third-party-licenses.py
+
+# Vendor dependencies locally
+vendor:
+    mkdir -p .cargo
+    cargo vendor --locked --versioned-dirs | head -n -1 > .cargo/config.toml
+    echo 'directory = "vendor"' >> .cargo/config.toml
+    tar pcf vendor.tar vendor
+    rm -rf vendor
+
+# Extracts vendored dependencies
+vendor-extract:
+    rm -rf vendor
+    tar pxf vendor.tar
+
+# The tag is `v<version>`; pushing it builds the packages and a draft GitHub
+# release (.github/workflows/release.yml). scripts/set-version.py writes the
+# version into Cargo.toml, the rpm spec, debian/changelog, the PKGBUILD, the
+# AppStream metadata and CHANGELOG.md.
+# Sets the version everywhere, commits and tags it
+tag version:
+    python3 -I scripts/set-version.py {{version}}
+    cargo check --locked
+    git add Cargo.toml Cargo.lock CHANGELOG.md resources/app.metainfo.xml packaging/rpm/cosmic-ext-keybox.spec packaging/debian/changelog packaging/aur/cosmic-ext-keybox/PKGBUILD
+    git diff --cached --quiet || git commit -m 'release: {{version}}'
+    git tag -a v{{version}} -m 'Keybox {{version}}'

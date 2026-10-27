@@ -4,6 +4,8 @@ All notable changes to Keybox. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
 ## [0.1.0] - 2026-10-27
 
 First release.
@@ -37,5 +39,8 @@ First release.
   [`docs/providers.md`](docs/providers.md) and
   [`docs/qualification.md`](docs/qualification.md) for what is verified and
   the known limits.
+- Release packages: a source archive with all crates included, an .rpm
+  (Fedora 43), a .deb (Debian testing) and an Arch package, built and checked
+  by a GitHub workflow on each tag.
 
 [0.1.0]: https://github.com/rabol/cosmic-ext-keybox/releases/tag/v0.1.0
