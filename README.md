@@ -10,11 +10,11 @@ Keybox is a client of the freedesktop Secret Service API
 (oo7, GNOME Keyring, KWallet, KeePassXC, ...) and never reads keyring files
 directly. It is not affiliated with System76.
 
-**Status:** early development. Tested with oo7 0.6 and GNOME Keyring 51.1;
-see [`docs/qualification.md`](docs/qualification.md) for what is verified and
-what is still open. See [`specs.md`](specs.md) for the
-specification and [`docs/providers.md`](docs/providers.md) for tested
-providers.
+**Status:** 0.1.0, the first release. Tested with oo7 0.6 and GNOME Keyring
+51.1; see [`docs/qualification.md`](docs/qualification.md) for what is
+verified and what is still open. See [`specs.md`](specs.md) for the
+specification, [`docs/providers.md`](docs/providers.md) for tested providers
+and [`CHANGELOG.md`](CHANGELOG.md) for changes.
 
 > **Note:** COSMIC has no keyring password prompt yet, so Keybox shows its own
 > when it unlocks or creates a keyring. It is used only for Keybox's own
@@ -119,7 +119,7 @@ copy kept by the toolkit's text field, which Keybox cannot wipe. See
 
 ## Development
 
-Requirements: Rust 1.92+, [`just`](https://github.com/casey/just), and for the
+Requirements: Rust 1.93+, [`just`](https://github.com/casey/just), and for the
 integration tests `dbus-daemon` and `oo7-daemon`.
 
 ```sh
@@ -129,7 +129,8 @@ just build-release
 sudo just install       # binary, desktop entry, metainfo and icon
 ```
 
-An Arch package recipe is in [`packaging/arch`](packaging/arch).
+Arch package recipes are in [`packaging/arch`](packaging/arch): `cosmic-ext-keybox`
+builds the tagged release, `cosmic-ext-keybox-git` the latest commit.
 
 GNOME Keyring tests run when `gnome-keyring-daemon` is installed, or when
 `KEYBOX_TEST_GNOME_KEYRING_ROOT` points at an unpacked `gnome-keyring`

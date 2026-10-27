@@ -48,4 +48,19 @@
     <keyword>credentials</keyword>
   </keywords>
   <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-10-27">
+      <description>
+        <p>First release.</p>
+        <ul>
+          <li>Browse keyrings and entries without reading any secret</li>
+          <li>Reveal and copy secrets, hidden and cleared again after a timeout</li>
+          <li>Create, edit and delete text entries; create, rename and delete empty keyrings</li>
+          <li>Lock and unlock keyrings, with a built-in password prompt on desktops that have none, such as COSMIC</li>
+          <li>Tested with oo7 0.6 and GNOME Keyring 51.1</li>
+        </ul>
+      </description>
+      <url type="details">https://github.com/rabol/cosmic-ext-keybox/releases/tag/v0.1.0</url>
+    </release>
+  </releases>
 </component>

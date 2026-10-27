@@ -20,7 +20,8 @@ libraries were evaluated first:
 | Plaintext wiped after decryption | — | No: one intermediate copy is not wiped |
 | Malformed IV from the service | — | Panics (`expect("Invalid key length")`) |
 
-The custom client uses the same RustCrypto crates as oo7, rejects plaintext
+The custom client uses the RustCrypto crates (`aes`, `cbc`, `hkdf`, `sha2`;
+newer releases than oo7 0.6 since 2026-10-27), rejects plaintext
 sessions, validates the service's public key and the IV, wipes every plaintext
 buffer, and addresses all calls to the owner's unique bus name so a replaced
 service never receives requests meant for the previous one. `oo7` is still used
@@ -61,11 +62,13 @@ additional keyrings with their own password.
 
 Consequences for Keybox:
 
-- An unlock request must show a "waiting for the keyring service" state with
-  a Cancel action, and a hint if no prompt appears. Cancel drops the request,
+- An unlock request shows a "waiting for the keyring service" state with a
+  Cancel action, and a hint if no prompt appears. Cancel drops the request,
   which dismisses the prompt.
-- The Lock action's confirmation should warn that unlocking again may not be
-  possible from this desktop with the current provider.
+- Since 2026-10-27 Keybox answers its own unlock and create requests with a
+  built-in prompter (next section). Other applications still get no prompt,
+  so the Lock action's confirmation says that only Keybox can unlock again
+  on this desktop.
 
 The integration tests use a fake KDE prompter to cover successful unlock,
 retry, rejection and the no-answer case.
@@ -129,9 +132,9 @@ calls: Keybox sends secrets only over the encrypted session.
 | Set label, attributes, secret | Work; `ItemChanged` emitted | Work; setting attributes adds `xdg:schema` = `org.freedesktop.Secret.Generic` |
 | Delete an entry | No prompt; `ItemDeleted` emitted | No prompt; `ItemDeleted` emitted |
 | Read a deleted entry | `NoSuchObject` | Generic error; Keybox checks the keyring's entry list instead |
-| Write to a locked keyring | Create and delete wait for an unlock prompt (never answered on COSMIC); set label fails with a generic error; set secret fails with `IsLocked` | `IsLocked` for all |
+| Write to a locked keyring | Create and delete wait for an unlock prompt (on COSMIC answered only by Keybox's built-in prompter); set label fails with a generic error; set secret fails with `IsLocked` | `IsLocked` for all |
 | `SearchItems` in a locked keyring | Finds nothing | Finds matches |
-| Create a keyring | Asks the desktop prompter (`CreateCollectionPrompt`); works with one, waits forever without (COSMIC) | Dismissed at once without a prompter |
+| Create a keyring | Asks the desktop prompter (`CreateCollectionPrompt`); works with one, waits forever without (COSMIC, unless Keybox's built-in prompter answers) | Dismissed at once without a prompter |
 | Rename a keyring | Works (unlocked); generic error while locked | Works |
 | Set the default alias | **Unreliable**: marks the target without unmarking the old default, and `ReadAlias` then returns whichever comes first. Aliases are kept in memory only | Works both ways |
 | Delete an empty keyring | Works without a prompt | Not tested: no second keyring can be created without a prompter |

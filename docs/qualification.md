@@ -1,7 +1,7 @@
 # MVP qualification status
 
 Status of the acceptance criteria in [`specs.md`](../specs.md) §8, as of
-2026-10-22 (commit after step 4). "Automated" means covered by `cargo test`
+2026-10-22 (commit after step 4), updated 2026-10-27 for 0.1.0. "Automated" means covered by `cargo test`
 or `scripts/privacy-check.sh`; "screenshot" means checked with the debug
 script runner (`src/ui/dev.rs`) against synthetic keyrings.
 
@@ -25,7 +25,7 @@ script runner (`src/ui/dev.rs`) against synthetic keyrings.
 | --- | --- | --- |
 | Create text entries; edit labels, attributes and text secrets | **Done** for oo7 and GNOME Keyring | `tests/management.rs` (both providers); editor unit tests; flows driven with the debug script runner and checked on the test bus |
 | Delete an entry with confirmation naming entry and keyring | **Done** | Dialog shows both names; tests for both providers |
-| Create and rename keyrings | **Done** for oo7 (with a prompter); creation untested to success on GNOME Keyring | Fake KDE prompter answers oo7's `CreateCollectionPrompt`; on COSMIC the prompt never appears and Cancel is offered |
+| Create and rename keyrings | **Done** for oo7 (with a prompter); creation untested to success on GNOME Keyring | Fake KDE prompter answers oo7's `CreateCollectionPrompt`; on COSMIC Keybox's built-in prompter answers it (see below) |
 | Set the default alias | **Not offered** | Backend implemented and verified; oo7 0.6.0 is unreliable, see [`providers.md`](providers.md#changing-stored-data-management-release) |
 | Delete empty keyrings only | **Done** for oo7 | Default and session keyrings excluded; emptiness rechecked before the call |
 | Never replace an entry implicitly | **Done** | `replace=false` always; duplicate attributes need an explicit choice; tests on both providers |
@@ -44,13 +44,28 @@ script runner (`src/ui/dev.rs`) against synthetic keyrings.
 | Step aside when a real prompter exists | **Done** | Tested for a running and an activatable prompter |
 | GNOME Keyring through the built-in prompter | **Open** | Same protocol, untested |
 
-## Still open before an MVP release
+## Before tagging 0.1.0
 
-- Install for real and check the COSMIC launcher, light theme and icon.
-- Manual check of real focus loss (hide on deactivation, deferred clipboard clear).
-- Screen-reader check with Orca; report upstream if libcosmic exposes nothing.
-- GNOME Keyring unlock through a real prompter (needs GNOME Shell or gcr).
+Manual checks on a real COSMIC session:
+
+- Installed build: Keybox appears in the COSMIC launcher with its icon, and
+  looks right in the light theme.
+- Real focus loss: a revealed secret hides when another window is focused;
+  a copied secret is cleared on the next focus once the timer has run out.
+- Visual check of the editor and dialogs.
+- Push the tag, fill in the checksum (`updpkgsums`) and build the Arch
+  package from `packaging/arch/cosmic-ext-keybox`.
+
+## Known limits of 0.1.0
+
+Documented, not blocking the release:
+
+- Screen reader: not verified with Orca; Keybox (like other COSMIC apps) did
+  not appear on the AT-SPI bus. Report upstream if libcosmic exposes nothing.
+- GNOME Keyring unlock tested without a prompter only, and not through
+  Keybox's built-in prompter.
 - KWallet and KeePassXC: untested.
-- Prompt window parenting on Wayland: Keybox passes no window identifier yet.
-- Session-lock notification: Keybox relies on window deactivation only.
-- Push to GitHub and build the Arch package from it.
+- Prompt window parenting on Wayland: Keybox passes no window identifier to
+  desktop prompters yet (needs libcosmic support).
+- Session lock: Keybox hides secrets on window deactivation only; it does not
+  listen for a session-lock notification.
