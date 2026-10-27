@@ -45,6 +45,7 @@ data directories; see `tests/support/mod.rs`).
 | External label change / deletion | `ItemChanged` / `ItemDeleted` emitted; deleted paths return `NoSuchObject` |
 | Item deletion by another client | Needs no prompt |
 | Daemon restart | Name owner change observed; old paths unusable |
+| Start-up (checked 2026-10-27) | Owns `org.freedesktop.secrets` **before** its keyrings are loaded. Until then `Collections` is empty, calls that create objects (prompts, sessions) panic the handler (`Service::connection` unset) so the caller times out, and reading `Collections` while it registers keyrings can deadlock. The tests wait for the `session` collection object (registered last) via introspection. Matters for Keybox only if it activates the daemon itself; at login the daemon is normally already running |
 
 ### Unlock prompts on COSMIC
 

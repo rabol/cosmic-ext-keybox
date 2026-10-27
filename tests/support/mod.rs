@@ -319,6 +319,44 @@ impl TestEnv {
             .unwrap();
         self.daemon = Some(child);
         self.wait_for_owner(true).await;
+        self.wait_for_oo7_ready().await;
+    }
+
+    /// oo7-daemon 0.6 owns its bus name before it has loaded its keyrings:
+    /// until then it lists no collections, and some calls make it panic
+    /// (`Service::connection` is still unset). It registers the `session`
+    /// collection last, so wait for that object to exist.
+    ///
+    /// Checked by introspection: reading `Collections` during start-up can
+    /// deadlock the daemon (the property waits for a lock that start-up
+    /// holds while it registers objects).
+    async fn wait_for_oo7_ready(&self) {
+        const SESSION: &str = "/org/freedesktop/secrets/collection/session";
+        let conn = self.raw_connection().await;
+        for _ in 0..200 {
+            let reply = tokio::time::timeout(
+                Duration::from_secs(2),
+                conn.call_method(
+                    Some("org.freedesktop.secrets"),
+                    SESSION,
+                    Some("org.freedesktop.DBus.Introspectable"),
+                    "Introspect",
+                    &(),
+                ),
+            )
+            .await;
+            if let Ok(Ok(reply)) = reply
+                && let Ok(xml) = reply.body().deserialize::<String>()
+                && xml.contains("org.freedesktop.Secret.Collection")
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!(
+            "oo7-daemon did not finish starting; daemon log:\n{}",
+            self.daemon_log()
+        );
     }
 
     /// Starts a private bus plus GNOME Keyring, with the standard fixtures
