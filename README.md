@@ -23,6 +23,9 @@ and [`CHANGELOG.md`](CHANGELOG.md) for changes.
 
 ## Using Keybox
 
+The [user guide](docs/user-guide.md) describes every feature, setting and
+message in detail. In short:
+
 - Pick a keyring in the sidebar and an entry in the list. Nothing secret is
   read until you choose **Reveal** or **Copy**.
 - A revealed secret hides itself after 30 seconds (see Settings), and as soon
