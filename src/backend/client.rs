@@ -17,13 +17,15 @@ use zbus::{MatchRule, Message, MessageStream};
 
 use super::crypto::{self, KeyPair, SessionKey};
 use super::proxy::{
-    COLLECTION_INTERFACE, ITEM_INTERFACE, ItemProxy, PromptProxy, SERVICE_INTERFACE, SERVICE_NAME,
-    SERVICE_PATH, ServiceProxy,
+    COLLECTION_INTERFACE, CollectionProxy, ITEM_INTERFACE, ItemProxy, OutgoingSecret, PromptProxy,
+    SERVICE_INTERFACE, SERVICE_NAME, SERVICE_PATH, ServiceProxy,
 };
 use super::{CollectionInfo, Error, ItemInfo, ObjectId, Provider, RetrievedSecret, ServiceEvent};
-use crate::secret::SecretValue;
+use crate::secret::{SecretText, SecretValue};
 
 const METHOD_TIMEOUT: Duration = Duration::from_secs(30);
+/// Content type for text secrets Keybox stores.
+const TEXT_CONTENT_TYPE: &str = "text/plain";
 /// How many metadata requests may be in flight at once.
 const METADATA_CONCURRENCY: usize = 16;
 
@@ -153,15 +155,19 @@ impl Client {
         let mut props = self.get_all(SERVICE_PATH, SERVICE_INTERFACE).await?;
         let paths: Vec<OwnedObjectPath> = take(&mut props, "Collections").ok_or(Error::Protocol)?;
 
-        let default = match self.service().await?.read_alias("default").await {
+        let service = self.service().await?;
+        let default = match service.read_alias("default").await {
             Ok(path) if path.as_str() != "/" => Ok(Some(path)),
             Ok(_) => Ok(None),
             Err(_) => Err(()),
         };
+        let session = service.read_alias("session").await.ok();
 
         let infos = stream::iter(paths)
             .map(|path| {
                 let default = &default;
+                let is_session = session.as_ref() == Some(&path)
+                    || path.as_str() == "/org/freedesktop/secrets/collection/session";
                 async move {
                     let id = self.id(path);
                     let is_default = default
@@ -175,6 +181,7 @@ impl Client {
                             created: take(&mut p, "Created").and_then(timestamp),
                             modified: take(&mut p, "Modified").and_then(timestamp),
                             is_default,
+                            is_session,
                             error: None,
                             id,
                         },
@@ -185,6 +192,7 @@ impl Client {
                             created: None,
                             modified: None,
                             is_default,
+                            is_session,
                             error: Some(error),
                         },
                     }
@@ -199,10 +207,7 @@ impl Client {
     /// Lists a collection's entries with their metadata. Fetches no secrets.
     pub async fn items(&self, collection: &ObjectId) -> Result<Vec<ItemInfo>, Error> {
         self.check(collection)?;
-        let mut props = self
-            .get_all(collection.path.as_str(), COLLECTION_INTERFACE)
-            .await?;
-        let paths: Vec<OwnedObjectPath> = take(&mut props, "Items").ok_or(Error::Protocol)?;
+        let paths = self.item_paths(collection).await?;
         let infos = stream::iter(paths)
             .map(|path| self.item_info(collection.clone(), self.id(path)))
             .buffered(METADATA_CONCURRENCY)
@@ -218,8 +223,28 @@ impl Client {
         let info = self.item_info(collection.clone(), item.clone()).await;
         match info.error {
             Some(Error::NoSuchObject) => Err(Error::NoSuchObject),
+            // Some providers (GNOME Keyring) answer a deleted path with a
+            // generic error. Check the collection's entry list to tell.
+            Some(_) if !self.collection_contains(collection, item).await? => {
+                Err(Error::NoSuchObject)
+            }
             _ => Ok(info),
         }
+    }
+
+    async fn collection_contains(
+        &self,
+        collection: &ObjectId,
+        item: &ObjectId,
+    ) -> Result<bool, Error> {
+        Ok(self.item_paths(collection).await?.contains(&item.path))
+    }
+
+    async fn item_paths(&self, collection: &ObjectId) -> Result<Vec<OwnedObjectPath>, Error> {
+        let mut props = self
+            .get_all(collection.path.as_str(), COLLECTION_INTERFACE)
+            .await?;
+        take(&mut props, "Items").ok_or(Error::Protocol)
     }
 
     async fn item_info(&self, collection: ObjectId, id: ObjectId) -> ItemInfo {
@@ -259,13 +284,11 @@ impl Client {
             .session
             .as_ref()
             .ok_or(Error::EncryptionUnavailable)?;
-        let proxy = ItemProxy::builder(&self.inner.conn)
-            .destination(self.inner.owner.clone())?
-            .path(item.path.clone())?
-            .cache_properties(CacheProperties::No)
-            .build()
+        let raw = self
+            .item_proxy(item)
+            .await?
+            .get_secret(&session.path.as_ref())
             .await?;
-        let raw = proxy.get_secret(&session.path.as_ref()).await?;
         if raw.session != session.path {
             return Err(Error::Protocol);
         }
@@ -287,7 +310,7 @@ impl Client {
     ) -> Result<PromptOutcome, Error> {
         let paths = self.paths(objects)?;
         let (_, prompt) = self.service().await?.unlock(&paths).await?;
-        self.run_prompt(prompt, window_id).await
+        Ok(self.run_prompt(prompt, window_id).await?.0)
     }
 
     /// Asks the service to lock objects. This may affect other applications.
@@ -299,16 +322,197 @@ impl Client {
     ) -> Result<PromptOutcome, Error> {
         let paths = self.paths(objects)?;
         let (_, prompt) = self.service().await?.lock(&paths).await?;
-        self.run_prompt(prompt, window_id).await
+        Ok(self.run_prompt(prompt, window_id).await?.0)
     }
 
+    // --- changes to stored data ---
+
+    /// Finds entries in a collection whose attributes include all of
+    /// `attributes`: the entries an application looking them up would find.
+    pub async fn find_items(
+        &self,
+        collection: &ObjectId,
+        attributes: &BTreeMap<String, String>,
+    ) -> Result<Vec<ObjectId>, Error> {
+        self.check(collection)?;
+        let query: HashMap<&str, &str> = attributes
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let paths = self
+            .collection_proxy(collection)
+            .await?
+            .search_items(query)
+            .await?;
+        Ok(paths.into_iter().map(|p| self.id(p)).collect())
+    }
+
+    /// Creates a text entry. Never replaces an existing entry, even one
+    /// with the same attributes. The provider may prompt (for example if
+    /// the keyring is locked).
+    pub async fn create_item(
+        &self,
+        collection: &ObjectId,
+        label: &str,
+        attributes: &BTreeMap<String, String>,
+        secret: &SecretText,
+        window_id: Option<&str>,
+    ) -> Result<ObjectId, Error> {
+        self.check(collection)?;
+        let secret = self.outgoing(secret)?;
+        let mut properties: HashMap<&str, Value<'_>> = HashMap::new();
+        properties.insert("org.freedesktop.Secret.Item.Label", Value::from(label));
+        let attributes: HashMap<&str, &str> = attributes
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        properties.insert(
+            "org.freedesktop.Secret.Item.Attributes",
+            Value::from(attributes),
+        );
+        let (item, prompt) = self
+            .collection_proxy(collection)
+            .await?
+            .create_item(properties, &secret, false)
+            .await?;
+        if item.as_str() != "/" {
+            return Ok(self.id(item));
+        }
+        let (_, result) = self.run_prompt(prompt, window_id).await?;
+        let item = result
+            .and_then(|v| OwnedObjectPath::try_from(v).ok())
+            .filter(|p| p.as_str() != "/")
+            .ok_or(Error::Protocol)?;
+        Ok(self.id(item))
+    }
+
+    /// Changes an entry's label.
+    pub async fn set_item_label(&self, item: &ObjectId, label: &str) -> Result<(), Error> {
+        self.set_property(item, ITEM_INTERFACE, "Label", Value::from(label))
+            .await
+    }
+
+    /// Replaces an entry's attributes. Applications find their entries by
+    /// attributes, so this can make an application lose track of one.
+    pub async fn set_item_attributes(
+        &self,
+        item: &ObjectId,
+        attributes: &BTreeMap<String, String>,
+    ) -> Result<(), Error> {
+        let attributes: HashMap<&str, &str> = attributes
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        self.set_property(item, ITEM_INTERFACE, "Attributes", Value::from(attributes))
+            .await
+    }
+
+    /// Replaces an entry's secret with text, over the encrypted session.
+    pub async fn set_item_secret(&self, item: &ObjectId, secret: &SecretText) -> Result<(), Error> {
+        self.check(item)?;
+        let secret = self.outgoing(secret)?;
+        self.item_proxy(item).await?.set_secret(&secret).await?;
+        Ok(())
+    }
+
+    /// Deletes an entry. The provider may prompt.
+    pub async fn delete_item(
+        &self,
+        item: &ObjectId,
+        window_id: Option<&str>,
+    ) -> Result<PromptOutcome, Error> {
+        self.check(item)?;
+        let prompt = self.item_proxy(item).await?.delete().await?;
+        Ok(self.run_prompt(prompt, window_id).await?.0)
+    }
+
+    /// Creates a collection. Providers normally prompt for its password.
+    pub async fn create_collection(
+        &self,
+        label: &str,
+        window_id: Option<&str>,
+    ) -> Result<ObjectId, Error> {
+        let mut properties: HashMap<&str, Value<'_>> = HashMap::new();
+        properties.insert(
+            "org.freedesktop.Secret.Collection.Label",
+            Value::from(label),
+        );
+        let (collection, prompt) = self
+            .service()
+            .await?
+            .create_collection(properties, "")
+            .await?;
+        if collection.as_str() != "/" {
+            return Ok(self.id(collection));
+        }
+        let (_, result) = self.run_prompt(prompt, window_id).await?;
+        let collection = result
+            .and_then(|v| OwnedObjectPath::try_from(v).ok())
+            .filter(|p| p.as_str() != "/")
+            .ok_or(Error::Protocol)?;
+        Ok(self.id(collection))
+    }
+
+    /// Changes a collection's label.
+    pub async fn set_collection_label(
+        &self,
+        collection: &ObjectId,
+        label: &str,
+    ) -> Result<(), Error> {
+        self.set_property(
+            collection,
+            COLLECTION_INTERFACE,
+            "Label",
+            Value::from(label),
+        )
+        .await
+    }
+
+    /// Points the `default` alias at a collection. Applications store new
+    /// entries there unless they choose a collection themselves.
+    ///
+    /// Reads the alias back and returns [`Error::NotApplied`] if the
+    /// service accepted the call but the alias did not move (oo7 0.6.0
+    /// does this when moving the default back to an earlier keyring).
+    pub async fn set_default_collection(&self, collection: &ObjectId) -> Result<(), Error> {
+        self.check(collection)?;
+        let service = self.service().await?;
+        service
+            .set_alias("default", &collection.path.as_ref())
+            .await?;
+        if service.read_alias("default").await? == collection.path {
+            Ok(())
+        } else {
+            Err(Error::NotApplied)
+        }
+    }
+
+    /// Deletes a collection, but only if it currently has no entries.
+    ///
+    /// The emptiness check and the deletion are separate calls; an entry
+    /// added in between by another application would be deleted with it.
+    pub async fn delete_empty_collection(
+        &self,
+        collection: &ObjectId,
+        window_id: Option<&str>,
+    ) -> Result<PromptOutcome, Error> {
+        self.check(collection)?;
+        if !self.item_paths(collection).await?.is_empty() {
+            return Err(Error::NotEmpty);
+        }
+        let prompt = self.collection_proxy(collection).await?.delete().await?;
+        Ok(self.run_prompt(prompt, window_id).await?.0)
+    }
+
+    /// Runs a prompt if the service returned one. Returns the prompt's
+    /// result value (for example a created object's path) when completed.
     async fn run_prompt(
         &self,
         prompt: OwnedObjectPath,
         window_id: Option<&str>,
-    ) -> Result<PromptOutcome, Error> {
+    ) -> Result<(PromptOutcome, Option<OwnedValue>), Error> {
         if prompt.as_str() == "/" {
-            return Ok(PromptOutcome::Done);
+            return Ok((PromptOutcome::Done, None));
         }
         let proxy = PromptProxy::builder(&self.inner.conn)
             .destination(self.inner.owner.clone())?
@@ -322,10 +526,12 @@ impl Client {
         proxy.prompt(window_id.unwrap_or("")).await?;
         let signal = completed.next().await.ok_or(Error::Disconnected)?;
         guard.0 = None;
-        if signal.args()?.dismissed {
+        let args = signal.args()?;
+        if args.dismissed {
             Err(Error::PromptDismissed)
         } else {
-            Ok(PromptOutcome::Completed)
+            let result = args.result.try_to_owned().ok();
+            Ok((PromptOutcome::Completed, result))
         }
     }
 
@@ -391,6 +597,63 @@ impl Client {
         ids.iter()
             .map(|id| self.check(id).map(|()| id.path.as_ref()))
             .collect()
+    }
+
+    /// Encrypts a text secret for this session. Fails rather than sending
+    /// plaintext when no encrypted session exists.
+    fn outgoing(&self, secret: &SecretText) -> Result<OutgoingSecret, Error> {
+        let session = self
+            .inner
+            .session
+            .as_ref()
+            .ok_or(Error::EncryptionUnavailable)?;
+        let (parameters, value) = session.key.encrypt(secret.expose().as_bytes())?;
+        Ok(OutgoingSecret {
+            session: session.path.clone(),
+            parameters,
+            value,
+            content_type: TEXT_CONTENT_TYPE.to_owned(),
+        })
+    }
+
+    async fn item_proxy(&self, item: &ObjectId) -> Result<ItemProxy<'static>, Error> {
+        Ok(ItemProxy::builder(&self.inner.conn)
+            .destination(self.inner.owner.clone())?
+            .path(item.path.clone())?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?)
+    }
+
+    async fn collection_proxy(
+        &self,
+        collection: &ObjectId,
+    ) -> Result<CollectionProxy<'static>, Error> {
+        Ok(CollectionProxy::builder(&self.inner.conn)
+            .destination(self.inner.owner.clone())?
+            .path(collection.path.clone())?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?)
+    }
+
+    async fn set_property(
+        &self,
+        object: &ObjectId,
+        interface: &'static str,
+        name: &str,
+        value: Value<'_>,
+    ) -> Result<(), Error> {
+        self.check(object)?;
+        let proxy = PropertiesProxy::builder(&self.inner.conn)
+            .destination(self.inner.owner.clone())?
+            .path(object.path.clone())?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let interface = InterfaceName::from_static_str(interface).map_err(|_| Error::Protocol)?;
+        proxy.set(interface, name, value).await?;
+        Ok(())
     }
 
     async fn service(&self) -> Result<ServiceProxy<'static>, Error> {

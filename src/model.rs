@@ -308,6 +308,7 @@ mod tests {
             created: None,
             modified: None,
             is_default: Some(default),
+            is_session: false,
             error: None,
         }
     }

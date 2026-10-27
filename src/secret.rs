@@ -14,6 +14,12 @@ use zeroize::Zeroizing;
 pub struct SecretText(Zeroizing<String>);
 
 impl SecretText {
+    /// Wraps text typed by the user. The caller's buffer is moved, not copied.
+    #[must_use]
+    pub fn new(text: Zeroizing<String>) -> Self {
+        Self(text)
+    }
+
     /// Gives access to the secret text. Keep the borrow as short as possible.
     #[must_use]
     pub fn expose(&self) -> &str {

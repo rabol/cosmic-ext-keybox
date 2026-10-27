@@ -2,7 +2,8 @@
 
 A keyring manager for the COSMIC desktop. Keybox shows which application
 credentials are stored in your desktop keyring and lets you inspect, reveal and
-copy a selected entry.
+copy a selected entry, create and edit text entries, delete entries, and
+create, rename or delete empty keyrings.
 
 Keybox is a client of the freedesktop Secret Service API
 (`org.freedesktop.secrets`). It works with whichever provider is running
@@ -29,6 +30,26 @@ providers.
   to show a password prompt, which not every desktop provides (oo7 on COSMIC
   currently cannot).
 
+### Changing entries and keyrings
+
+- **New entry** (in an unlocked keyring) and **Edit** open a form for the
+  label, the secret and the attributes. Editing keeps the current secret
+  unless you tick **Replace the secret**; Keybox never loads it into the form.
+- Applications find their entries by attributes. Before saving, Keybox looks
+  for other entries with the same attributes and warns you. It never replaces
+  an existing entry; to change one, edit it.
+- Before saving an edit, Keybox reads the entry again and warns you if another
+  application changed it in the meantime. It cannot stop a change made at the
+  very same moment.
+- **Delete** asks for confirmation naming the entry and its keyring.
+- The **Keyring** menu creates, renames and deletes keyrings. Only empty
+  keyrings can be deleted, never the default or the session keyring. Creating
+  a keyring needs the keyring service's password prompt, which oo7 on COSMIC
+  currently cannot show; Keybox then waits and lets you cancel.
+- Changing which keyring is the default is not offered: oo7 0.6 does not do it
+  reliably (see [`docs/providers.md`](docs/providers.md)).
+- Entries and keyrings must be unlocked before they can be changed.
+
 ### Keyboard
 
 | Keys | Action |
@@ -37,11 +58,14 @@ providers.
 | Ctrl+Page Up / Page Down | Previous / next keyring |
 | Ctrl+Shift+E | Reveal or hide the secret |
 | Ctrl+Shift+C | Copy the secret |
+| Ctrl+N | New entry |
+| F2 | Edit the entry |
+| Delete | Delete the entry (asks first) |
 | Ctrl+F | Search labels and attributes |
 | Ctrl+R, F5 | Refresh |
 | Ctrl+, | Settings |
 | Tab / Shift+Tab | Move focus |
-| Escape | Close search or dialog, go back |
+| Escape | Close search or dialog, go back, leave an unchanged form |
 | Ctrl+Q | Quit |
 
 ### Clipboard managers
@@ -59,7 +83,9 @@ those may be kept on disk. If that matters to you:
 
 Keybox stores no secrets, labels, attributes or search text, makes no network
 requests and writes no logs. Its only saved setting is the reveal duration.
-It never falls back to unencrypted secret transfer. See
+It never falls back to unencrypted secret transfer, in either direction. A
+secret you type is held in memory that is wiped after use, except for the
+copy kept by the toolkit's text field, which Keybox cannot wipe. See
 [`docs/qualification.md`](docs/qualification.md) for what has been verified.
 
 ## Development

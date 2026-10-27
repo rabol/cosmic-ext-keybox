@@ -22,6 +22,17 @@ pub struct ObjectId {
 }
 
 impl ObjectId {
+    /// Builds an identifier without a connection, for unit tests. The
+    /// client rejects it unless the generation matches its own.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn detached(generation: u64, path: &str) -> Option<Self> {
+        Some(Self {
+            generation,
+            path: OwnedObjectPath::try_from(path).ok()?,
+        })
+    }
+
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
@@ -86,6 +97,9 @@ pub struct CollectionInfo {
     pub modified: Option<SystemTime>,
     /// Whether the `default` alias points here. `None` if the alias could not be read.
     pub is_default: Option<bool>,
+    /// The provider's temporary `session` keyring (lost on logout). Keybox
+    /// never offers to delete it.
+    pub is_session: bool,
     pub error: Option<Error>,
 }
 

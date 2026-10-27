@@ -69,6 +69,46 @@ Consequences for Keybox:
 The integration tests use a fake KDE prompter to cover successful unlock,
 retry, rejection and the no-answer case.
 
+## Changing stored data (management release)
+
+Tested 2026-10-22 with `tests/management.rs` against oo7 0.6.0 and GNOME
+Keyring 51.1, on private buses with disposable keyrings. A bus monitor
+confirms that no secret plaintext appears in `CreateItem` or `SetSecret`
+calls: Keybox sends secrets only over the encrypted session.
+
+| Scenario | oo7 0.6.0 | GNOME Keyring 51.1 |
+| --- | --- | --- |
+| Create a text entry (`replace=false`) | Works without a prompt; adds `xdg:content-type` | Works without a prompt |
+| Create again with the same attributes | Second, separate entry | Second, separate entry |
+| `SearchItems` for those attributes | Finds both | Finds both |
+| Set label, attributes, secret | Work; `ItemChanged` emitted | Work; setting attributes adds `xdg:schema` = `org.freedesktop.Secret.Generic` |
+| Delete an entry | No prompt; `ItemDeleted` emitted | No prompt; `ItemDeleted` emitted |
+| Read a deleted entry | `NoSuchObject` | Generic error; Keybox checks the keyring's entry list instead |
+| Write to a locked keyring | Create and delete wait for an unlock prompt (never answered on COSMIC); set label fails with a generic error; set secret fails with `IsLocked` | `IsLocked` for all |
+| `SearchItems` in a locked keyring | Finds nothing | Finds matches |
+| Create a keyring | Asks the desktop prompter (`CreateCollectionPrompt`); works with one, waits forever without (COSMIC) | Dismissed at once without a prompter |
+| Rename a keyring | Works (unlocked); generic error while locked | Works |
+| Set the default alias | **Unreliable**: marks the target without unmarking the old default, and `ReadAlias` then returns whichever comes first. Aliases are kept in memory only | Works both ways |
+| Delete an empty keyring | Works without a prompt | Not tested: no second keyring can be created without a prompter |
+| Delete the `session` keyring | oo7 deletes it | Not tested |
+
+Consequences for Keybox:
+
+- Changes are offered only while the keyring (and entry) is unlocked, so no
+  hidden unlock prompt is started. Every change runs with a "waiting for the
+  keyring service" banner and Cancel.
+- Before creating or editing, Keybox searches for other entries with the same
+  attributes and asks before saving. It always creates with `replace=false`.
+- Setting the default keyring is implemented and verified in the backend
+  (it reads the alias back and reports when the service did not apply it),
+  but not offered in the interface because of the oo7 behaviour above.
+- Keybox never offers to delete the default or the session keyring, and
+  checks again that a keyring is empty right before deleting it. The check and
+  the deletion are separate calls; the service offers nothing atomic.
+- Keybox does not promise atomic conflict detection: it re-reads an entry
+  just before saving and warns about differences, but a change made between
+  that read and the save can be overwritten.
+
 ## Clipboard on COSMIC Wayland
 
 Tested 2026-10-22 on COSMIC (cosmic-comp, Arch) with libcosmic `430f3d4`,

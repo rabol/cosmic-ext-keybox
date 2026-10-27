@@ -1,5 +1,5 @@
 app-title = Keybox
-app-comment = Inspect the passwords and secrets stored in your desktop keyring
+app-comment = Inspect and manage the passwords and secrets stored in your desktop keyring
 app-keywords = keyring;password;passwords;secret;secrets;credentials;keychain;wallet;
 
 ## Menus
@@ -16,6 +16,12 @@ search = Search
 repository = Repository
 lock-keyring = Lock keyring…
 unlock-keyring = Unlock keyring
+menu-new-entry = New entry…
+menu-edit-entry = Edit entry…
+menu-delete-entry = Delete entry…
+menu-new-keyring = New keyring…
+menu-rename-keyring = Rename keyring…
+menu-delete-keyring = Delete keyring…
 
 ## Header and connection status
 status-connecting = Connecting…
@@ -129,6 +135,8 @@ error-session = the secure session expired
 error-protocol = the keyring service sent an unexpected reply
 error-service = the keyring service reported an error ({ $name })
 error-crypto = decryption failed
+error-not-empty = the keyring is not empty
+error-not-applied = the keyring service accepted the request but did not apply it
 
 ## Secret
 secret-title = Secret
@@ -159,3 +167,81 @@ settings-reveal-duration = Hide revealed secrets after
 settings-seconds = { $seconds } seconds
 settings-clipboard = Clipboard
 settings-clipboard-body = After you copy a secret, Keybox clears it from the clipboard after { $seconds } seconds, but only if the clipboard still holds exactly that secret. Keybox can only check the clipboard while its window is focused: if you switch away, the check happens when you return to Keybox. Clipboard managers and other apps may keep their own copies, which Keybox cannot remove.
+
+## Changing stored data
+new-entry = New entry
+edit-entry = Edit
+delete-entry = Delete
+writes-untested = Changing stored data has not been tested with this keyring service.
+write-waiting = Waiting for the keyring service…
+write-waiting-hint = No prompt appeared? The keyring service may need a password prompt that your desktop does not provide. You can cancel.
+write-cancelled = Stopped waiting. The keyring service may still complete the change, so check the result.
+write-dismissed = The keyring service's prompt was cancelled. Nothing was changed.
+
+## Entry editor
+editor-new-title = New entry in “{ $keyring }”
+editor-edit-title = Edit “{ $entry }”
+editor-label = Label
+editor-label-placeholder = Name shown in the entry list
+editor-secret = Secret
+editor-replace-secret = Replace the secret
+editor-replace-secret-note = The current secret is kept unless you replace it. Keybox does not load it into this form.
+editor-secret-note = Entered on one line. It is sent to the keyring service encrypted and never saved by Keybox.
+editor-secret-empty = The secret is empty. That is allowed, but rarely intended.
+editor-attributes = Attributes
+editor-attributes-note = Applications find their entries by these attributes. Changing them can make an application lose track of its entry.
+editor-attribute-name = Name
+editor-attribute-value = Value
+editor-add-attribute = Add attribute
+editor-remove-attribute = Remove attribute
+editor-create = Create
+editor-save = Save
+editor-checking = Checking…
+editor-saving = Saving…
+editor-duplicates = { $count ->
+    [one] Another entry in this keyring already has all of these attributes.
+   *[other] { $count } entries in this keyring already have all of these attributes.
+} Applications that look entries up by these attributes may find either one. Keybox never replaces an existing entry; to change it, edit it instead.
+editor-save-anyway = Save anyway
+editor-edit-existing = Edit the existing entry
+editor-conflict = Another application changed this entry after you started editing. Saving overwrites those changes. Keybox checks just before saving, but cannot stop another application from changing the entry at the same moment.
+editor-overwrite = Save and overwrite
+editor-reload = Discard my changes and reload
+editor-changed-elsewhere = Another application changed this entry while you were editing it.
+editor-deleted = This entry no longer exists. Another application may have deleted it.
+editor-locked = The keyring is locked. Unlock it, then save again.
+editor-unlock-first = Unlock the keyring first.
+editor-invalid-label = Enter a label.
+editor-invalid-attribute-name = Every attribute needs a name.
+editor-invalid-attribute-repeated = The attribute “{ $name }” appears more than once.
+editor-failed = Could not save: { $reason }
+editor-failed-partly = Saved the { $applied }, but not the { $part }: { $reason }
+editor-part-label = label
+editor-part-attributes = attributes
+editor-part-secret = secret
+editor-created = Entry created.
+editor-saved = Changes saved.
+
+## Deleting entries
+delete-entry-title = Delete “{ $entry }”?
+delete-entry-body = This permanently deletes the entry from the keyring “{ $keyring }”. Applications that use it will no longer find it. This cannot be undone.
+delete-entry-confirm = Delete entry
+entry-deleted = Entry deleted.
+
+## Keyring management
+keyring-name = Name
+new-keyring-title = New keyring
+new-keyring-body = The keyring service will ask you to choose a password for the new keyring. Not every desktop provides that prompt.
+new-keyring-confirm = Create keyring
+keyring-created = Keyring created.
+rename-keyring-title = Rename keyring
+rename-keyring-confirm = Rename
+delete-keyring-title = Delete “{ $keyring }”?
+delete-keyring-body = This keyring has no entries. Deleting it cannot be undone.
+delete-keyring-confirm = Delete keyring
+keyring-deleted = Keyring deleted.
+keyring-unlock-first = Unlock the keyring first.
+keyring-delete-session = The session keyring belongs to the keyring service and can't be deleted here.
+keyring-delete-default = The default keyring can't be deleted here.
+keyring-delete-not-empty = Only empty keyrings can be deleted.
+keyring-delete-not-loaded = The keyring's entries have not finished loading.

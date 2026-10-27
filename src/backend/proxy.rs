@@ -2,12 +2,12 @@
 
 //! Minimal `org.freedesktop.Secret.*` proxies.
 //!
-//! Only read operations, lock and unlock are declared. Properties are read
-//! through `org.freedesktop.DBus.Properties.GetAll` in `client.rs`.
+//! Properties are read and written through `org.freedesktop.DBus.Properties`
+//! in `client.rs`.
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use zbus::proxy;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Type, Value};
 
@@ -35,6 +35,22 @@ impl Drop for RawSecret {
     }
 }
 
+/// A secret to send, already encrypted for the session.
+#[derive(Serialize, Type)]
+pub struct OutgoingSecret {
+    pub session: OwnedObjectPath,
+    pub parameters: Vec<u8>,
+    pub value: Vec<u8>,
+    pub content_type: String,
+}
+
+impl Drop for OutgoingSecret {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.value.zeroize();
+    }
+}
+
 #[proxy(interface = "org.freedesktop.Secret.Service", gen_blocking = false)]
 pub trait Service {
     fn open_session(
@@ -55,6 +71,14 @@ pub trait Service {
 
     fn read_alias(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
 
+    fn set_alias(&self, name: &str, collection: &ObjectPath<'_>) -> zbus::Result<()>;
+
+    fn create_collection(
+        &self,
+        properties: HashMap<&str, Value<'_>>,
+        alias: &str,
+    ) -> zbus::Result<(OwnedObjectPath, OwnedObjectPath)>;
+
     fn get_secrets(
         &self,
         items: &[ObjectPath<'_>],
@@ -62,9 +86,27 @@ pub trait Service {
     ) -> zbus::Result<HashMap<OwnedObjectPath, RawSecret>>;
 }
 
+#[proxy(interface = "org.freedesktop.Secret.Collection", gen_blocking = false)]
+pub trait Collection {
+    fn create_item(
+        &self,
+        properties: HashMap<&str, Value<'_>>,
+        secret: &OutgoingSecret,
+        replace: bool,
+    ) -> zbus::Result<(OwnedObjectPath, OwnedObjectPath)>;
+
+    fn search_items(&self, attributes: HashMap<&str, &str>) -> zbus::Result<Vec<OwnedObjectPath>>;
+
+    fn delete(&self) -> zbus::Result<OwnedObjectPath>;
+}
+
 #[proxy(interface = "org.freedesktop.Secret.Item", gen_blocking = false)]
 pub trait Item {
     fn get_secret(&self, session: &ObjectPath<'_>) -> zbus::Result<RawSecret>;
+
+    fn set_secret(&self, secret: &OutgoingSecret) -> zbus::Result<()>;
+
+    fn delete(&self) -> zbus::Result<OwnedObjectPath>;
 }
 
 #[proxy(interface = "org.freedesktop.Secret.Prompt", gen_blocking = false)]

@@ -4,6 +4,7 @@
 
 #[cfg(debug_assertions)]
 mod dev;
+mod editor;
 mod secrets;
 mod view;
 
@@ -20,10 +21,11 @@ use cosmic::widget::{self, about::About, menu, nav_bar};
 use futures_util::{Stream, StreamExt, stream};
 
 use keybox::backend::{
-    Bus, Client, CollectionInfo, Error, ItemInfo, ObjectId, PromptOutcome, ServiceEvent,
+    Bus, Client, CollectionInfo, Error, ItemInfo, ObjectId, PromptOutcome, Provider, ServiceEvent,
 };
 use keybox::model::{ConnectionState, Store, display_line};
 
+use editor::{Editor, TypedSecret};
 use secrets::{ClipboardGuard, Intent, SecretSlot, SecretState};
 
 use crate::config::Config;
@@ -87,6 +89,13 @@ pub struct App {
     /// Collection we asked to lock; checked after the next listing.
     verify_locked: Option<ObjectId>,
     dialog: Option<Dialog>,
+    dialog_input_id: widget::Id,
+    /// The entry being created or edited.
+    editor: Option<Editor>,
+    /// A change to stored data waiting for the service.
+    write: Option<PendingWrite>,
+    /// Keyring to show once the next listing contains it.
+    activate_collection: Option<ObjectId>,
     next_op: u64,
     #[cfg(debug_assertions)]
     dev_script: std::collections::VecDeque<dev::Step>,
@@ -107,10 +116,33 @@ struct PendingUnlock {
     show_hint: bool,
 }
 
+/// A change to stored data in progress. Only one runs at a time.
+pub struct PendingWrite {
+    op: u64,
+    handle: cosmic::iced::task::Handle,
+    show_hint: bool,
+    /// Started by the entry editor.
+    editor: bool,
+}
+
+/// Results of changes to stored data.
+#[derive(Debug, Clone)]
+pub enum WriteDone {
+    Entry(editor::SaveOutcome),
+    EntryDeleted(ObjectId, Result<PromptOutcome, Error>),
+    KeyringCreated(Result<ObjectId, Error>),
+    KeyringRenamed(Result<(), Error>),
+    KeyringDeleted(Result<PromptOutcome, Error>),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Dialog {
     ConfirmLock(ObjectId),
     ConfirmCopy(ObjectId),
+    DeleteEntry(ObjectId),
+    NewKeyring(String),
+    RenameKeyring(ObjectId, String),
+    DeleteKeyring(ObjectId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +191,35 @@ pub enum Message {
     UnlockFinished(u64, Result<PromptOutcome, Error>),
     LockFinished(u64, ObjectId, Result<PromptOutcome, Error>),
     CloseDialog,
+    DialogInput(String),
+
+    NewEntry,
+    EditEntry,
+    EditorLabel(String),
+    EditorSecret(TypedSecret),
+    EditorSecretVisible,
+    EditorReplaceSecret(bool),
+    EditorAttributeKey(usize, String),
+    EditorAttributeValue(usize, String),
+    EditorAddAttribute,
+    EditorRemoveAttribute(usize),
+    EditorSave,
+    EditorChecked(u64, Result<editor::Check, Error>),
+    EditorConfirm,
+    EditorReload,
+    EditorOpenExisting(ObjectId),
+    EditorCancel,
+    RequestDeleteEntry,
+    ConfirmDeleteEntry(ObjectId),
+    RequestNewKeyring,
+    ConfirmNewKeyring,
+    RequestRenameKeyring,
+    ConfirmRenameKeyring(ObjectId),
+    RequestDeleteKeyring,
+    ConfirmDeleteKeyring(ObjectId),
+    WriteFinished(u64, WriteDone),
+    WriteHint(u64),
+    CancelWrite,
 
     Key(Modifiers, Key, Option<keyboard::key::Physical>),
     ToggleContextPage(ContextPage),
@@ -183,6 +244,12 @@ pub enum MenuAction {
     Search,
     Lock,
     Unlock,
+    NewEntry,
+    EditEntry,
+    DeleteEntry,
+    NewKeyring,
+    RenameKeyring,
+    DeleteKeyring,
     Quit,
 }
 
@@ -199,6 +266,12 @@ impl menu::action::MenuAction for MenuAction {
             Self::Search => Message::OpenSearch,
             Self::Lock => Message::RequestLock,
             Self::Unlock => Message::Unlock,
+            Self::NewEntry => Message::NewEntry,
+            Self::EditEntry => Message::EditEntry,
+            Self::DeleteEntry => Message::RequestDeleteEntry,
+            Self::NewKeyring => Message::RequestNewKeyring,
+            Self::RenameKeyring => Message::RequestRenameKeyring,
+            Self::DeleteKeyring => Message::RequestDeleteKeyring,
             Self::Quit => Message::Quit,
         }
     }
@@ -267,6 +340,10 @@ impl cosmic::Application for App {
             unlock: None,
             verify_locked: None,
             dialog: None,
+            dialog_input_id: widget::Id::unique(),
+            editor: None,
+            write: None,
+            activate_collection: None,
             next_op: 0,
             #[cfg(debug_assertions)]
             dev_script: dev::script().into(),
@@ -361,6 +438,13 @@ impl cosmic::Application for App {
         }
         if self.search.is_some() {
             return self.update(Message::CloseSearch);
+        }
+        if let Some(editor) = &self.editor {
+            // Never throw away typed changes on a stray key press.
+            if !editor.is_dirty() && self.write.is_none() {
+                self.editor = None;
+            }
+            return Task::none();
         }
         if self.single_pane() && self.selected_item.is_some() {
             self.selected_item = None;
@@ -642,6 +726,154 @@ impl cosmic::Application for App {
 
             Message::CloseDialog => self.dialog = None,
 
+            Message::DialogInput(text) => {
+                if let Some(Dialog::NewKeyring(name) | Dialog::RenameKeyring(_, name)) =
+                    &mut self.dialog
+                {
+                    *name = text;
+                }
+            }
+
+            Message::NewEntry => return self.open_new_entry(),
+            Message::EditEntry => return self.open_edit_entry(),
+            Message::EditorCancel => self.close_editor(),
+            Message::EditorSave => return self.editor_save(),
+            Message::EditorChecked(op, result) => return self.editor_checked(op, result),
+            Message::EditorConfirm => return self.editor_confirm(),
+            Message::EditorReload => return self.editor_reload(),
+            Message::EditorOpenExisting(item) => return self.editor_open_existing(item),
+            Message::EditorLabel(_)
+            | Message::EditorSecret(_)
+            | Message::EditorSecretVisible
+            | Message::EditorReplaceSecret(_)
+            | Message::EditorAttributeKey(..)
+            | Message::EditorAttributeValue(..)
+            | Message::EditorAddAttribute
+            | Message::EditorRemoveAttribute(_) => self.edit_field(message),
+
+            Message::RequestDeleteEntry => {
+                if self.editor.is_none()
+                    && self.write.is_none()
+                    && let Some(info) = self.selected_item_info()
+                {
+                    if info.locked == Some(false) {
+                        self.dialog = Some(Dialog::DeleteEntry(info.id.clone()));
+                    } else {
+                        return self.toast(fl!("editor-unlock-first"));
+                    }
+                }
+            }
+
+            Message::ConfirmDeleteEntry(item) => {
+                self.dialog = None;
+                let Some(client) = self.client.clone() else {
+                    return Task::none();
+                };
+                return self.start_write(false, async move {
+                    let result = client.delete_item(&item, None).await;
+                    WriteDone::EntryDeleted(item, result)
+                });
+            }
+
+            Message::RequestNewKeyring => {
+                if self.connection == ConnectionState::Connected && self.write.is_none() {
+                    self.dialog = Some(Dialog::NewKeyring(String::new()));
+                    return widget::text_input::focus(self.dialog_input_id.clone());
+                }
+            }
+
+            Message::ConfirmNewKeyring => {
+                let Some(Dialog::NewKeyring(name)) = self.dialog.take() else {
+                    return Task::none();
+                };
+                let Some(client) = self.client.clone() else {
+                    return Task::none();
+                };
+                if name.trim().is_empty() {
+                    self.dialog = Some(Dialog::NewKeyring(name));
+                    return Task::none();
+                }
+                return self.start_write(false, async move {
+                    WriteDone::KeyringCreated(client.create_collection(&name, None).await)
+                });
+            }
+
+            Message::RequestRenameKeyring => {
+                if self.write.is_none()
+                    && let Some(collection) = self.active_collection()
+                {
+                    if collection.locked != Some(false) {
+                        return self.toast(fl!("keyring-unlock-first"));
+                    }
+                    self.dialog = Some(Dialog::RenameKeyring(
+                        collection.id.clone(),
+                        collection.label.clone().unwrap_or_default(),
+                    ));
+                    return widget::text_input::focus(self.dialog_input_id.clone());
+                }
+            }
+
+            Message::ConfirmRenameKeyring(collection) => {
+                let Some(Dialog::RenameKeyring(_, name)) = self.dialog.take() else {
+                    return Task::none();
+                };
+                let Some(client) = self.client.clone() else {
+                    return Task::none();
+                };
+                if name.trim().is_empty() {
+                    self.dialog = Some(Dialog::RenameKeyring(collection, name));
+                    return Task::none();
+                }
+                return self.start_write(false, async move {
+                    WriteDone::KeyringRenamed(client.set_collection_label(&collection, &name).await)
+                });
+            }
+
+            Message::RequestDeleteKeyring => {
+                if self.write.is_none()
+                    && let Some(collection) = self.active_collection()
+                {
+                    match self.keyring_deletable(collection) {
+                        Ok(()) => self.dialog = Some(Dialog::DeleteKeyring(collection.id.clone())),
+                        Err(reason) => return self.toast(reason),
+                    }
+                }
+            }
+
+            Message::ConfirmDeleteKeyring(collection) => {
+                self.dialog = None;
+                let Some(client) = self.client.clone() else {
+                    return Task::none();
+                };
+                return self.start_write(false, async move {
+                    let result = client.delete_empty_collection(&collection, None).await;
+                    WriteDone::KeyringDeleted(result)
+                });
+            }
+
+            Message::WriteFinished(op, done) => {
+                if self.write.as_ref().is_none_or(|w| w.op != op) {
+                    return Task::none();
+                }
+                self.write = None;
+                return self.on_write_finished(done);
+            }
+
+            Message::WriteHint(op) => {
+                if let Some(write) = self.write.as_mut()
+                    && write.op == op
+                {
+                    write.show_hint = true;
+                }
+            }
+
+            Message::CancelWrite => {
+                if self.write.is_some() {
+                    self.cancel_write();
+                    return self.toast(fl!("write-cancelled"));
+                }
+            }
+
             Message::Key(modifiers, key, physical) => {
                 if let Some(task) = self.navigation_key(modifiers, &key) {
                     return task;
@@ -737,12 +969,178 @@ impl App {
         Task::batch([task, hint])
     }
 
+    /// Starts a change to stored data. The provider may show a prompt;
+    /// until it answers, a banner offers Cancel, which drops the request
+    /// (dismissing the prompt).
+    fn start_write(
+        &mut self,
+        editor: bool,
+        work: impl std::future::Future<Output = WriteDone> + Send + 'static,
+    ) -> Task<cosmic::Action<Message>> {
+        if self.write.is_some() {
+            return Task::none();
+        }
+        self.next_op += 1;
+        let op = self.next_op;
+        let (task, handle) =
+            cosmic::task::future(async move { Message::WriteFinished(op, work.await) }).abortable();
+        self.write = Some(PendingWrite {
+            op,
+            handle,
+            show_hint: false,
+            editor,
+        });
+        let hint = cosmic::task::future(async move {
+            tokio::time::sleep(editor::WRITE_HINT_DELAY).await;
+            Message::WriteHint(op)
+        });
+        Task::batch([task, hint])
+    }
+
+    /// Stops waiting for a change. The service may still have made it.
+    fn cancel_write(&mut self) {
+        if let Some(write) = self.write.take() {
+            write.handle.abort();
+            if write.editor
+                && let Some(editor) = self.editor.as_mut()
+            {
+                editor.stage = editor::Stage::Editing;
+                editor.notice = Some(editor::Notice::Failed(fl!("write-cancelled")));
+            }
+        }
+    }
+
+    fn on_write_finished(&mut self, done: WriteDone) -> Task<cosmic::Action<Message>> {
+        match done {
+            WriteDone::Entry(outcome) => self.editor_saved(outcome),
+            WriteDone::EntryDeleted(item, result) => match result {
+                Ok(_) => {
+                    let collection = self
+                        .store
+                        .as_ref()
+                        .and_then(|s| s.item(&item))
+                        .map(|i| i.collection.clone());
+                    let mut tasks = vec![self.toast(fl!("entry-deleted"))];
+                    if let Some(collection) = collection {
+                        if let Some(store) = self.store.as_mut() {
+                            store.remove_item(&collection, &item);
+                        }
+                        tasks.push(self.load_items(&collection));
+                    }
+                    self.drop_missing_selection();
+                    Task::batch(tasks)
+                }
+                Err(Error::PromptDismissed) => self.toast(fl!("write-dismissed")),
+                Err(error) => self.operation_failed(&error),
+            },
+            WriteDone::KeyringCreated(result) => match result {
+                Ok(id) => {
+                    self.activate_collection = Some(id);
+                    let toast = self.toast(fl!("keyring-created"));
+                    Task::batch([self.load_collections(false), toast])
+                }
+                Err(Error::PromptDismissed) => self.toast(fl!("write-dismissed")),
+                Err(error) => self.operation_failed(&error),
+            },
+            WriteDone::KeyringRenamed(result) => match result {
+                Ok(()) => Task::batch([self.load_collections(false), self.update_title()]),
+                Err(error) => self.operation_failed(&error),
+            },
+            WriteDone::KeyringDeleted(result) => match result {
+                Ok(_) => {
+                    let toast = self.toast(fl!("keyring-deleted"));
+                    Task::batch([self.load_collections(false), toast])
+                }
+                Err(Error::PromptDismissed) => self.toast(fl!("write-dismissed")),
+                Err(error) => self.operation_failed(&error),
+            },
+        }
+    }
+
+    /// Applies a change to one of the editor's fields.
+    fn edit_field(&mut self, message: Message) {
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        if editor.stage != editor::Stage::Editing {
+            return;
+        }
+        match message {
+            Message::EditorLabel(text) => editor.label = text,
+            Message::EditorSecret(text) => {
+                // Shares the message's wiping buffer; the old value is wiped.
+                editor.secret = zeroize::Zeroizing::new(text.take());
+            }
+            Message::EditorSecretVisible => editor.secret_hidden = !editor.secret_hidden,
+            Message::EditorReplaceSecret(on) => {
+                editor.replace_secret = on;
+                if !on {
+                    editor.secret = zeroize::Zeroizing::new(String::new());
+                    editor.secret_hidden = true;
+                }
+            }
+            Message::EditorAttributeKey(index, text) => {
+                if let Some(row) = editor.attributes.get_mut(index) {
+                    row.key = text;
+                }
+            }
+            Message::EditorAttributeValue(index, text) => {
+                if let Some(row) = editor.attributes.get_mut(index) {
+                    row.value = text;
+                }
+            }
+            Message::EditorAddAttribute => editor.attributes.push(editor::AttributeRow {
+                key: String::new(),
+                value: String::new(),
+            }),
+            Message::EditorRemoveAttribute(index) => {
+                if index < editor.attributes.len() {
+                    editor.attributes.remove(index);
+                }
+            }
+            _ => return,
+        }
+        editor.touched();
+    }
+
+    /// Whether the keyring may be deleted from Keybox, or why not.
+    fn keyring_deletable(&self, collection: &CollectionInfo) -> Result<(), String> {
+        if collection.is_session {
+            return Err(fl!("keyring-delete-session"));
+        }
+        if collection.is_default != Some(false) {
+            return Err(fl!("keyring-delete-default"));
+        }
+        if collection.locked != Some(false) {
+            return Err(fl!("keyring-unlock-first"));
+        }
+        match self.store.as_ref().and_then(|s| s.items(&collection.id)) {
+            Some(keybox::model::Load::Loaded(items)) if items.is_empty() => Ok(()),
+            Some(keybox::model::Load::Loaded(_)) => Err(fl!("keyring-delete-not-empty")),
+            _ => Err(fl!("keyring-delete-not-loaded")),
+        }
+    }
+
+    /// Whether changes to stored data were never tested with this provider.
+    fn writes_untested(&self) -> bool {
+        !matches!(
+            self.client.as_ref().and_then(Client::provider),
+            Some(Provider::Oo7 | Provider::GnomeKeyring)
+        )
+    }
+
     /// Drops the client and everything derived from it.
     fn disconnect(&mut self, state: ConnectionState) {
         self.hide_secret();
         if let Some(unlock) = self.unlock.take() {
             unlock.handle.abort();
         }
+        if let Some(write) = self.write.take() {
+            write.handle.abort();
+        }
+        // Typed changes cannot be saved to a different connection.
+        self.editor = None;
+        self.activate_collection = None;
         self.connection = state;
         self.client = None;
         self.store = None;
@@ -761,7 +1159,10 @@ impl App {
         key: &Key,
     ) -> Option<Task<cosmic::Action<Message>>> {
         use keyboard::key::Named;
-        if self.dialog.is_some() || self.connection != ConnectionState::Connected {
+        if self.dialog.is_some()
+            || self.editor.is_some()
+            || self.connection != ConnectionState::Connected
+        {
             return None;
         }
         let Key::Named(named) = key else {
@@ -904,6 +1305,7 @@ impl App {
                 pending.items.insert(collection);
             }
             ServiceEvent::ItemDeleted { collection, item } => {
+                self.editor_on_item_event(&item, true);
                 if let Some(store) = self.store.as_mut() {
                     store.remove_item(&collection, &item);
                 }
@@ -911,7 +1313,8 @@ impl App {
                 self.pending_refresh.items.insert(collection);
             }
             ServiceEvent::ItemChanged { collection, item } => {
-                pending.single.insert((collection, item));
+                self.editor_on_item_event(&item, false);
+                self.pending_refresh.single.insert((collection, item));
             }
             ServiceEvent::PropertiesChanged(object) => {
                 let store = self.store.as_ref();
@@ -919,7 +1322,9 @@ impl App {
                     pending.collections = true;
                     pending.items.insert(object);
                 } else if let Some(item) = store.and_then(|s| s.item(&object)) {
-                    pending.single.insert((item.collection.clone(), object));
+                    let collection = item.collection.clone();
+                    self.editor_on_item_event(&object, false);
+                    self.pending_refresh.single.insert((collection, object));
                 }
             }
         }
@@ -955,7 +1360,10 @@ impl App {
                 .icon(widget::icon::from_name(icon))
                 .data::<ObjectId>(collection.id.clone())
                 .id();
-            if active.as_ref() == Some(&collection.id)
+            if self.activate_collection.as_ref() == Some(&collection.id) {
+                self.activate_collection = None;
+                to_activate = Some(id);
+            } else if active.as_ref() == Some(&collection.id)
                 || (active.is_none() && to_activate.is_none())
             {
                 to_activate = Some(id);
@@ -1036,6 +1444,7 @@ impl App {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn dev_next(&mut self) -> Task<cosmic::Action<Message>> {
         use cosmic::Application;
         use dev::Step;
@@ -1093,8 +1502,52 @@ impl App {
             Step::Confirm => match self.dialog.clone() {
                 Some(Dialog::ConfirmLock(id)) => self.update(Message::ConfirmLock(id)),
                 Some(Dialog::ConfirmCopy(id)) => self.update(Message::ConfirmCopy(id)),
+                Some(Dialog::DeleteEntry(id)) => self.update(Message::ConfirmDeleteEntry(id)),
+                Some(Dialog::NewKeyring(_)) => self.update(Message::ConfirmNewKeyring),
+                Some(Dialog::RenameKeyring(id, _)) => {
+                    self.update(Message::ConfirmRenameKeyring(id))
+                }
+                Some(Dialog::DeleteKeyring(id)) => self.update(Message::ConfirmDeleteKeyring(id)),
                 None => Task::none(),
             },
+            Step::Message(message) => self.update(*message),
+            Step::Status => {
+                let editor = self.editor.as_ref().map(|e| {
+                    let notice = e.notice.as_ref().map(|n| match n {
+                        editor::Notice::Duplicates { count, .. } => format!("Duplicates({count})"),
+                        editor::Notice::Conflict => "Conflict".into(),
+                        editor::Notice::Deleted => "Deleted".into(),
+                        editor::Notice::Locked => "Locked".into(),
+                        editor::Notice::Invalid(_) => "Invalid".into(),
+                        editor::Notice::Failed(_) => "Failed".into(),
+                    });
+                    format!(
+                        "stage={:?} notice={notice:?} changed_elsewhere={}",
+                        e.stage, e.changed_elsewhere
+                    )
+                });
+                let dialog = self.dialog.as_ref().map(|d| match d {
+                    Dialog::ConfirmLock(_) => "ConfirmLock",
+                    Dialog::ConfirmCopy(_) => "ConfirmCopy",
+                    Dialog::DeleteEntry(_) => "DeleteEntry",
+                    Dialog::NewKeyring(_) => "NewKeyring",
+                    Dialog::RenameKeyring(..) => "RenameKeyring",
+                    Dialog::DeleteKeyring(_) => "DeleteKeyring",
+                });
+                eprintln!(
+                    "KEYBOX_DEV_SCRIPT: status editor={editor:?} dialog={dialog:?} write={} selected={}",
+                    self.write.is_some(),
+                    self.selected_item.is_some(),
+                );
+                Task::none()
+            }
+            Step::Field(field, text) => self.update(match field {
+                dev::Field::Label => Message::EditorLabel(text),
+                dev::Field::Secret => Message::EditorSecret(TypedSecret::new(text)),
+                dev::Field::AttributeKey(i) => Message::EditorAttributeKey(i, text),
+                dev::Field::AttributeValue(i) => Message::EditorAttributeValue(i, text),
+                dev::Field::Dialog => Message::DialogInput(text),
+            }),
             Step::Reveal => self.update(Message::RevealSecret),
             Step::Copy => self.update(Message::CopySecret),
             Step::Hide => self.update(Message::HideSecret),
@@ -1156,6 +1609,8 @@ fn error_reason(error: &Error) -> String {
         Error::Protocol => fl!("error-protocol"),
         Error::Service { name } => fl!("error-service", name = name.clone()),
         Error::Crypto(_) => fl!("error-crypto"),
+        Error::NotEmpty => fl!("error-not-empty"),
+        Error::NotApplied => fl!("error-not-applied"),
     }
 }
 
@@ -1186,6 +1641,21 @@ fn key_binds() -> HashMap<menu::KeyBind, MenuAction> {
         ctrl("f", MenuAction::Search),
         ctrl("r", MenuAction::Refresh),
         ctrl("q", MenuAction::Quit),
+        ctrl("n", MenuAction::NewEntry),
+        (
+            menu::KeyBind {
+                modifiers: vec![],
+                key: Key::Named(keyboard::key::Named::F2),
+            },
+            MenuAction::EditEntry,
+        ),
+        (
+            menu::KeyBind {
+                modifiers: vec![],
+                key: Key::Named(keyboard::key::Named::Delete),
+            },
+            MenuAction::DeleteEntry,
+        ),
         (
             menu::KeyBind {
                 modifiers: vec![],

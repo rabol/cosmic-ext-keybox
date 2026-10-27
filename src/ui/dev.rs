@@ -11,6 +11,13 @@
 //!   `back`, `technical`, `single-pane`, `reveal`, `copy`, `hide`, `unfocus`,
 //!   `focus`, `clip-is:<text>`, `clip-set:<text>`, `settings`,
 //!   `reveal-choice:<index>`, `key:<keys>`, `shot:<file.png>`, `quit`.
+//! - Changing data: `new-entry`, `edit-entry`, `delete-entry`, `new-keyring`,
+//!   `rename-keyring`, `delete-keyring`, `add-attr`, `remove-attr:<i>`,
+//!   `replace-secret`, `show-secret`, `save`, `editor-confirm`,
+//!   `editor-reload`, `editor-cancel`, `cancel-write`, `status` (prints
+//!   editor, dialog and write state without any text), and field input:
+//!   `label=<text>`, `secret=<text>`, `attr-key<i>=<text>`,
+//!   `attr-value<i>=<text>`, `dialog=<text>`.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -48,7 +55,21 @@ pub enum Step {
     /// Choose an entry in the reveal-duration dropdown by index.
     RevealChoice(usize),
     Shot(PathBuf),
+    Status,
     Quit,
+    /// Send an app message directly (buttons without their own step).
+    Message(Box<super::Message>),
+    /// Type into an editor or dialog field.
+    Field(Field, String),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Field {
+    Label,
+    Secret,
+    AttributeKey(usize),
+    AttributeValue(usize),
+    Dialog,
 }
 
 #[must_use]
@@ -68,6 +89,25 @@ pub fn script() -> Vec<Step> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .filter_map(|step| {
+            use super::Message as M;
+            if let Some((field, text)) = step.split_once('=') {
+                let field = match field {
+                    "label" => Field::Label,
+                    "secret" => Field::Secret,
+                    "dialog" => Field::Dialog,
+                    f => {
+                        if let Some(i) = f.strip_prefix("attr-key") {
+                            Field::AttributeKey(i.parse().ok()?)
+                        } else if let Some(i) = f.strip_prefix("attr-value") {
+                            Field::AttributeValue(i.parse().ok()?)
+                        } else {
+                            eprintln!("KEYBOX_DEV_SCRIPT: unknown field {f:?}");
+                            return None;
+                        }
+                    }
+                };
+                return Some(Step::Field(field, text.to_owned()));
+            }
             let (name, arg) = step.split_once(':').unwrap_or((step, ""));
             Some(match name {
                 "wait" => Step::Wait(Duration::from_millis(arg.parse().ok()?)),
@@ -98,6 +138,24 @@ pub fn script() -> Vec<Step> {
                 "clip-is" => Step::ClipIs(arg.replace("\\n", "\n").replace("\\0", "\0")),
                 "shot" => Step::Shot(PathBuf::from(arg)),
                 "quit" => Step::Quit,
+                "status" => Step::Status,
+                "new-entry" => Step::Message(Box::new(M::NewEntry)),
+                "edit-entry" => Step::Message(Box::new(M::EditEntry)),
+                "delete-entry" => Step::Message(Box::new(M::RequestDeleteEntry)),
+                "new-keyring" => Step::Message(Box::new(M::RequestNewKeyring)),
+                "rename-keyring" => Step::Message(Box::new(M::RequestRenameKeyring)),
+                "delete-keyring" => Step::Message(Box::new(M::RequestDeleteKeyring)),
+                "add-attr" => Step::Message(Box::new(M::EditorAddAttribute)),
+                "remove-attr" => {
+                    Step::Message(Box::new(M::EditorRemoveAttribute(arg.parse().ok()?)))
+                }
+                "replace-secret" => Step::Message(Box::new(M::EditorReplaceSecret(true))),
+                "show-secret" => Step::Message(Box::new(M::EditorSecretVisible)),
+                "save" => Step::Message(Box::new(M::EditorSave)),
+                "editor-confirm" => Step::Message(Box::new(M::EditorConfirm)),
+                "editor-reload" => Step::Message(Box::new(M::EditorReload)),
+                "editor-cancel" => Step::Message(Box::new(M::EditorCancel)),
+                "cancel-write" => Step::Message(Box::new(M::CancelWrite)),
                 other => {
                     eprintln!("KEYBOX_DEV_SCRIPT: unknown step {other:?}");
                     return None;

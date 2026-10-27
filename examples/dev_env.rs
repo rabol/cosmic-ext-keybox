@@ -26,7 +26,7 @@ async fn main() {
         println!("KEYBOX_DEV_BUS={}", env.address());
         eprintln!("Isolated GNOME Keyring running. Press Enter to stop.");
         wait_for_enter().await;
-        return;
+        stop(env);
     }
     let behaviour = match std::env::args().nth(1).as_deref() {
         Some("ignore") => support::PromptBehaviour::Ignore,
@@ -40,6 +40,14 @@ async fn main() {
     println!("KEYBOX_DEV_BUS={}", env.address());
     eprintln!("Isolated keyring service running. Press Enter to stop.");
     wait_for_enter().await;
+    stop(env);
+}
+
+/// Stops the daemons, then exits without waiting for the stdin reader,
+/// which would otherwise keep the runtime alive.
+fn stop(env: support::TestEnv) -> ! {
+    drop(env);
+    std::process::exit(0);
 }
 
 /// Waits for Enter, end of input, Ctrl+C or SIGTERM, so the environment is

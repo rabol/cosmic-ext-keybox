@@ -29,6 +29,10 @@ pub enum Error {
     Disconnected,
     #[error("the operation is not supported by the service")]
     Unsupported,
+    #[error("the keyring is not empty")]
+    NotEmpty,
+    #[error("the service accepted the request but did not apply it")]
+    NotApplied,
     #[error("the service did not respond in time")]
     Timeout,
     #[error("the secret transfer session is no longer valid")]

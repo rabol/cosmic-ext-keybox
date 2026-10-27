@@ -7,7 +7,7 @@
 //! against a compromised session.
 
 use aes::Aes128;
-use cbc::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use hkdf::Hkdf;
 use num_bigint_dig::BigUint;
 use sha2::Sha256;
@@ -127,6 +127,22 @@ impl SessionKey {
         Ok(buffer)
     }
 
+    /// Encrypts a secret value with a fresh random IV. Returns the IV (sent
+    /// as the secret's parameters) and the ciphertext. The plaintext is only
+    /// read, never copied.
+    pub fn encrypt(&self, plain: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
+        let mut iv = vec![0u8; IV_LEN];
+        getrandom::fill(&mut iv).map_err(|_| CryptoError::Random)?;
+        let mut out = vec![0u8; (plain.len() / BLOCK_LEN + 1) * BLOCK_LEN];
+        let len = cbc::Encryptor::<Aes128>::new_from_slices(self.0.as_ref(), &iv)
+            .map_err(|_| CryptoError::InvalidParameters)?
+            .encrypt_padded_b2b_mut::<Pkcs7>(plain, &mut out)
+            .map_err(|_| CryptoError::InvalidParameters)?
+            .len();
+        out.truncate(len);
+        Ok((iv, out))
+    }
+
     #[cfg(test)]
     fn bytes(&self) -> &[u8] {
         self.0.as_ref()
@@ -136,7 +152,6 @@ impl SessionKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cbc::cipher::BlockEncryptMut;
 
     #[test]
     fn both_sides_derive_the_same_key() {
@@ -193,5 +208,22 @@ mod tests {
             key.decrypt(&iv, &[]).unwrap_err(),
             CryptoError::InvalidParameters
         );
+    }
+
+    #[test]
+    fn encrypt_round_trip_uses_fresh_ivs() {
+        let a = KeyPair::generate().unwrap();
+        let b = KeyPair::generate().unwrap();
+        let ours = a.derive_key(b.public_key()).unwrap();
+        let theirs = b.derive_key(a.public_key()).unwrap();
+        for plain in [&b""[..], b"KBX-UNIT-ENCRYPT", &[0u8; 32]] {
+            let (iv, ct) = ours.encrypt(plain).unwrap();
+            assert_eq!(iv.len(), IV_LEN);
+            assert!(!ct.is_empty() && ct.len().is_multiple_of(BLOCK_LEN));
+            assert_eq!(theirs.decrypt(&iv, &ct).unwrap().as_slice(), plain);
+        }
+        let (iv1, _) = ours.encrypt(b"x").unwrap();
+        let (iv2, _) = ours.encrypt(b"x").unwrap();
+        assert_ne!(iv1, iv2);
     }
 }

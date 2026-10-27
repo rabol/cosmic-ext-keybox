@@ -575,6 +575,31 @@ impl FakePrompter {
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] conn: &zbus::Connection,
     ) {
+        self.answer(request, window_id, &header, conn);
+    }
+
+    /// Asked when a new keyring needs a password.
+    async fn create_collection_prompt(
+        &self,
+        request: zbus::zvariant::OwnedObjectPath,
+        window_id: String,
+        _activation_token: String,
+        _collection_name: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) {
+        self.answer(request, window_id, &header, conn);
+    }
+}
+
+impl FakePrompter {
+    fn answer(
+        &self,
+        request: zbus::zvariant::OwnedObjectPath,
+        window_id: String,
+        header: &zbus::message::Header<'_>,
+        conn: &zbus::Connection,
+    ) {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.window_ids.lock().unwrap().push(window_id);
         let sender = header.sender().unwrap().to_owned();
@@ -647,4 +672,44 @@ pub async fn secret_call_counter(env: &TestEnv) -> std::sync::Arc<std::sync::ato
     // Let the monitor become active before the test proceeds.
     tokio::time::sleep(Duration::from_millis(100)).await;
     count
+}
+
+/// Records the raw bytes of `CreateItem` and `SetSecret` calls on the
+/// private bus, to prove that secrets are never sent in plaintext.
+pub async fn write_call_recorder(env: &TestEnv) -> std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>> {
+    use futures_util::StreamExt;
+    let conn = env.raw_connection().await;
+    let rules = vec![
+        "type='method_call',interface='org.freedesktop.Secret.Collection',member='CreateItem'",
+        "type='method_call',interface='org.freedesktop.Secret.Item',member='SetSecret'",
+    ];
+    conn.call_method(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        Some("org.freedesktop.DBus.Monitoring"),
+        "BecomeMonitor",
+        &(rules, 0u32),
+    )
+    .await
+    .unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = seen.clone();
+    let mut stream = zbus::MessageStream::from(&conn);
+    tokio::spawn(async move {
+        let _keep = conn;
+        while let Some(Ok(msg)) = stream.next().await {
+            if let Some(member) = msg.header().member()
+                && matches!(member.as_str(), "CreateItem" | "SetSecret")
+            {
+                recorder.lock().unwrap().push(msg.data().to_vec());
+            }
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    seen
+}
+
+/// Whether `haystack` contains `needle` as a byte sequence.
+pub fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
 }

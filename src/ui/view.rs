@@ -13,6 +13,7 @@ use cosmic::widget::{self, menu};
 use keybox::backend::{CollectionInfo, Error, ItemInfo};
 use keybox::model::{ConnectionState, Load, display_line};
 
+use super::editor::{Editor, Notice, Stage};
 use super::secrets::SecretState;
 use super::{App, Dialog, MenuAction, Message, REVEAL_CHOICES, collection_name, error_reason};
 use crate::fl;
@@ -23,9 +24,17 @@ const LIST_LABEL_CHARS: usize = 120;
 /// Longest label or attribute value shown in the details pane.
 const DETAIL_TEXT_CHARS: usize = 2000;
 
+#[allow(clippy::too_many_lines)]
 pub fn menu_bar(app: &App) -> Element<'_, Message> {
     let connected = app.connection == ConnectionState::Connected;
     let locked = app.active_collection().and_then(|c| c.locked);
+    let idle = connected && app.editor.is_none() && app.write.is_none();
+    let entry_unlocked = app
+        .selected_item_info()
+        .is_some_and(|i| i.locked == Some(false));
+    let deletable = app
+        .active_collection()
+        .is_some_and(|c| app.keyring_deletable(c).is_ok());
     let item = |label: String, action, enabled: bool| {
         if enabled {
             menu::Item::Button(label, None, action)
@@ -61,6 +70,18 @@ pub fn menu_bar(app: &App) -> Element<'_, Message> {
                         MenuAction::Lock,
                         connected && locked == Some(false),
                     ),
+                    menu::Item::Divider,
+                    item(fl!("menu-new-keyring"), MenuAction::NewKeyring, idle),
+                    item(
+                        fl!("menu-rename-keyring"),
+                        MenuAction::RenameKeyring,
+                        idle && locked == Some(false),
+                    ),
+                    item(
+                        fl!("menu-delete-keyring"),
+                        MenuAction::DeleteKeyring,
+                        idle && deletable,
+                    ),
                 ],
             ),
         ),
@@ -78,6 +99,22 @@ pub fn menu_bar(app: &App) -> Element<'_, Message> {
                         fl!("menu-copy-secret"),
                         MenuAction::CopySecret,
                         connected && app.selected_item.is_some(),
+                    ),
+                    menu::Item::Divider,
+                    item(
+                        fl!("menu-new-entry"),
+                        MenuAction::NewEntry,
+                        idle && locked == Some(false),
+                    ),
+                    item(
+                        fl!("menu-edit-entry"),
+                        MenuAction::EditEntry,
+                        idle && entry_unlocked,
+                    ),
+                    item(
+                        fl!("menu-delete-entry"),
+                        MenuAction::DeleteEntry,
+                        idle && entry_unlocked,
                     ),
                 ],
             ),
@@ -152,6 +189,7 @@ pub fn header_end(app: &App) -> Vec<Element<'_, Message>> {
     elements
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn dialog(app: &App) -> Option<Element<'_, Message>> {
     match app.dialog.as_ref()? {
         Dialog::ConfirmLock(id) => {
@@ -189,6 +227,103 @@ pub fn dialog(app: &App) -> Option<Element<'_, Message>> {
                 )
                 .into(),
         ),
+        Dialog::DeleteEntry(id) => {
+            let store = app.store.as_ref()?;
+            let item = store.item(id)?;
+            let keyring = store
+                .collection(&item.collection)
+                .map_or_else(|| fl!("keyring-untitled"), collection_name);
+            let mut body = fl!("delete-entry-body", keyring = keyring);
+            if app.writes_untested() {
+                body = format!("{body}\n\n{}", fl!("writes-untested"));
+            }
+            Some(
+                widget::dialog()
+                    .title(fl!("delete-entry-title", entry = entry_label(item, 80)))
+                    .body(body)
+                    .icon(widget::icon::from_name("edit-delete-symbolic").size(64))
+                    .primary_action(
+                        widget::button::destructive(fl!("delete-entry-confirm"))
+                            .on_press(Message::ConfirmDeleteEntry(id.clone())),
+                    )
+                    .secondary_action(
+                        widget::button::standard(fl!("cancel")).on_press(Message::CloseDialog),
+                    )
+                    .into(),
+            )
+        }
+        Dialog::NewKeyring(name) => {
+            let valid = !name.trim().is_empty();
+            let mut body = fl!("new-keyring-body");
+            if app.writes_untested() {
+                body = format!("{body}\n\n{}", fl!("writes-untested"));
+            }
+            Some(
+                widget::dialog()
+                    .title(fl!("new-keyring-title"))
+                    .body(body)
+                    .control(
+                        widget::text_input(fl!("keyring-name"), name.as_str())
+                            .label(fl!("keyring-name"))
+                            .id(app.dialog_input_id.clone())
+                            .on_input(Message::DialogInput)
+                            .on_submit_maybe(valid.then_some(|_| Message::ConfirmNewKeyring)),
+                    )
+                    .primary_action(
+                        widget::button::suggested(fl!("new-keyring-confirm"))
+                            .on_press_maybe(valid.then_some(Message::ConfirmNewKeyring)),
+                    )
+                    .secondary_action(
+                        widget::button::standard(fl!("cancel")).on_press(Message::CloseDialog),
+                    )
+                    .into(),
+            )
+        }
+        Dialog::RenameKeyring(id, name) => {
+            let valid = !name.trim().is_empty();
+            let confirm = Message::ConfirmRenameKeyring(id.clone());
+            let submit = confirm.clone();
+            Some(
+                widget::dialog()
+                    .title(fl!("rename-keyring-title"))
+                    .control(
+                        widget::text_input(fl!("keyring-name"), name.as_str())
+                            .label(fl!("keyring-name"))
+                            .id(app.dialog_input_id.clone())
+                            .on_input(Message::DialogInput)
+                            .on_submit_maybe(valid.then_some(move |_| submit.clone())),
+                    )
+                    .primary_action(
+                        widget::button::suggested(fl!("rename-keyring-confirm"))
+                            .on_press_maybe(valid.then_some(confirm)),
+                    )
+                    .secondary_action(
+                        widget::button::standard(fl!("cancel")).on_press(Message::CloseDialog),
+                    )
+                    .into(),
+            )
+        }
+        Dialog::DeleteKeyring(id) => {
+            let name = app
+                .store
+                .as_ref()
+                .and_then(|s| s.collection(id))
+                .map_or_else(|| fl!("keyring-untitled"), collection_name);
+            Some(
+                widget::dialog()
+                    .title(fl!("delete-keyring-title", keyring = name))
+                    .body(fl!("delete-keyring-body"))
+                    .icon(widget::icon::from_name("edit-delete-symbolic").size(64))
+                    .primary_action(
+                        widget::button::destructive(fl!("delete-keyring-confirm"))
+                            .on_press(Message::ConfirmDeleteKeyring(id.clone())),
+                    )
+                    .secondary_action(
+                        widget::button::standard(fl!("cancel")).on_press(Message::CloseDialog),
+                    )
+                    .into(),
+            )
+        }
     }
 }
 
@@ -305,6 +440,20 @@ fn connected(app: &App) -> Element<'_, Message> {
         Load::Loaded(_) => {}
     }
 
+    let mut column = widget::column::with_capacity(3);
+    if let Some(unlock) = &app.unlock {
+        column = column.push(unlock_banner(unlock.show_hint));
+    }
+    if let Some(write) = &app.write {
+        column = column.push(write_banner(write.show_hint));
+    }
+    if let Some(editor) = &app.editor {
+        return column
+            .push(editor_view(app, editor))
+            .height(Length::Fill)
+            .into();
+    }
+
     let searching = app.search.as_deref().is_some_and(|q| !q.trim().is_empty());
     let list = if searching {
         search_pane(app)
@@ -335,11 +484,28 @@ fn connected(app: &App) -> Element<'_, Message> {
             .into()
     };
 
-    let mut column = widget::column::with_capacity(2);
-    if let Some(unlock) = &app.unlock {
-        column = column.push(unlock_banner(unlock.show_hint));
-    }
     column.push(body).height(Length::Fill).into()
+}
+
+fn write_banner(show_hint: bool) -> Element<'static, Message> {
+    let mut text = widget::column::with_capacity(2)
+        .push(widget::text::body(fl!("write-waiting")))
+        .spacing(4)
+        .width(Length::Fill);
+    if show_hint {
+        text = text.push(widget::text::caption(fl!("write-waiting-hint")));
+    }
+    widget::row::with_capacity(2)
+        .push(text)
+        .push(widget::button::standard(fl!("cancel")).on_press(Message::CancelWrite))
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .apply(widget::container)
+        .padding(12)
+        .class(cosmic::theme::Container::Card)
+        .apply(widget::container)
+        .padding([8, 12])
+        .into()
 }
 
 fn unlock_banner(show_hint: bool) -> Element<'static, Message> {
@@ -393,24 +559,29 @@ fn keyring_pane(app: &App) -> Element<'_, Message> {
                 .into(),
         ),
         Some(false) => Some(
-            widget::button::standard(fl!("lock-keyring"))
-                .on_press(Message::RequestLock)
+            widget::row::with_capacity(2)
+                .push(
+                    widget::button::standard(fl!("new-entry"))
+                        .leading_icon(widget::icon::from_name("list-add-symbolic"))
+                        .on_press_maybe(app.write.is_none().then_some(Message::NewEntry)),
+                )
+                .push(widget::button::standard(fl!("lock-keyring")).on_press(Message::RequestLock))
+                .spacing(8)
+                // Narrow list panes put the second button on its own line
+                // instead of wrapping its label inside the button.
+                .wrap()
+                .vertical_spacing(8)
                 .into(),
         ),
         None => None,
     };
 
-    let mut header = widget::row::with_capacity(2)
-        .push(
-            widget::column::with_capacity(2)
-                .push(widget::text::title4(collection_name(collection)))
-                .push(widget::text::caption(status.join(" · ")))
-                .width(Length::Fill),
-        )
-        .align_y(Alignment::Center)
-        .spacing(8);
+    let mut header = widget::column::with_capacity(3)
+        .push(widget::text::title4(collection_name(collection)).wrapping(Wrapping::WordOrGlyph))
+        .push(widget::text::caption(status.join(" · ")))
+        .spacing(4);
     if let Some(action) = action {
-        header = header.push(action);
+        header = header.push(widget::container(action).padding([4, 0, 0, 0]));
     }
 
     let content: Element<_> = match store.items(&collection.id) {
@@ -594,6 +765,26 @@ fn details_pane(app: &App) -> Element<'_, Message> {
             "details-unavailable",
             reason = error_reason(error)
         )));
+    }
+
+    if item.locked == Some(false) {
+        let idle = app.write.is_none();
+        column = column.push(
+            widget::row::with_capacity(2)
+                .push(
+                    widget::button::standard(fl!("edit-entry"))
+                        .leading_icon(widget::icon::from_name("document-edit-symbolic"))
+                        .on_press_maybe(
+                            (idle && item.attributes.is_some()).then_some(Message::EditEntry),
+                        ),
+                )
+                .push(
+                    widget::button::destructive(fl!("delete-entry"))
+                        .leading_icon(widget::icon::from_name("edit-delete-symbolic"))
+                        .on_press_maybe(idle.then_some(Message::RequestDeleteEntry)),
+                )
+                .spacing(8),
+        );
     }
 
     column = column.push(secret_section(app));
@@ -794,4 +985,216 @@ fn format_time(time: SystemTime) -> String {
     chrono::DateTime::<chrono::Local>::from(time)
         .format("%Y-%m-%d %H:%M")
         .to_string()
+}
+
+/// The form for creating or editing an entry.
+#[allow(clippy::too_many_lines)]
+fn editor_view<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> {
+    let store = app.store.as_ref();
+    let editing = editor.stage == Stage::Editing;
+    let busy = !editing || app.write.is_some();
+    let field = |enabled: bool| enabled && !busy;
+
+    let title = match editor.target.item() {
+        None => fl!(
+            "editor-new-title",
+            keyring = store
+                .and_then(|s| s.collection(editor.target.collection()))
+                .map_or_else(|| fl!("keyring-untitled"), collection_name)
+        ),
+        Some(item) => fl!(
+            "editor-edit-title",
+            entry = store
+                .and_then(|s| s.item(item))
+                .map_or_else(|| fl!("entry-untitled"), |i| entry_label(i, 80))
+        ),
+    };
+
+    let mut column = widget::column::with_capacity(8)
+        .push(widget::text::title3(title).wrapping(Wrapping::WordOrGlyph))
+        .spacing(16);
+
+    if app.writes_untested() {
+        column = column.push(widget::text::caption(fl!("writes-untested")));
+    }
+    if editor.changed_elsewhere && editor.notice.is_none() {
+        column = column.push(notice_card(
+            fl!("editor-changed-elsewhere"),
+            vec![(fl!("editor-reload"), Message::EditorReload, false)],
+        ));
+    }
+    if let Some(notice) = &editor.notice {
+        column = column.push(match notice {
+            Notice::Duplicates { count, single } => {
+                let mut actions = vec![(fl!("editor-save-anyway"), Message::EditorConfirm, true)];
+                if let Some(item) = single
+                    && editor.is_new()
+                {
+                    actions.push((
+                        fl!("editor-edit-existing"),
+                        Message::EditorOpenExisting(item.clone()),
+                        false,
+                    ));
+                }
+                notice_card(fl!("editor-duplicates", count = count), actions)
+            }
+            Notice::Conflict => notice_card(
+                fl!("editor-conflict"),
+                vec![
+                    (fl!("editor-overwrite"), Message::EditorConfirm, true),
+                    (fl!("editor-reload"), Message::EditorReload, false),
+                ],
+            ),
+            Notice::Deleted => notice_card(fl!("editor-deleted"), Vec::new()),
+            Notice::Locked => notice_card(fl!("editor-locked"), Vec::new()),
+            Notice::Invalid(text) | Notice::Failed(text) => notice_card(text.clone(), Vec::new()),
+        });
+    }
+
+    let label = on_input_maybe(
+        widget::text_input(fl!("editor-label-placeholder"), editor.label.as_str())
+            .label(fl!("editor-label"))
+            .id(editor.label_id.clone()),
+        field(true).then_some(Message::EditorLabel),
+    );
+    column = column.push(label);
+
+    // Secret
+    let mut secret = widget::column::with_capacity(4).spacing(8);
+    if !editor.is_new() {
+        secret = secret
+            .push(
+                widget::checkbox(editor.replace_secret)
+                    .label(fl!("editor-replace-secret"))
+                    .on_toggle_maybe(field(true).then_some(Message::EditorReplaceSecret)),
+            )
+            .push(widget::text::caption(fl!("editor-replace-secret-note")));
+    }
+    if editor.replace_secret {
+        secret = secret.push(on_input_maybe(
+            widget::secure_input(
+                fl!("editor-secret"),
+                editor.secret.as_str(),
+                field(true).then_some(Message::EditorSecretVisible),
+                editor.secret_hidden,
+            )
+            .label(fl!("editor-secret")),
+            field(true)
+                .then_some(|text| Message::EditorSecret(super::editor::TypedSecret::new(text))),
+        ));
+        let note = if editor.secret.is_empty() && editor.is_dirty() {
+            fl!("editor-secret-empty")
+        } else {
+            fl!("editor-secret-note")
+        };
+        secret = secret.push(widget::text::caption(note));
+    }
+    column = column.push(secret);
+
+    // Attributes
+    let mut attributes = widget::column::with_capacity(editor.attributes.len() + 3)
+        .push(widget::text::heading(fl!("editor-attributes")))
+        .push(widget::text::caption(fl!("editor-attributes-note")))
+        .spacing(8);
+    for (index, row) in editor.attributes.iter().enumerate() {
+        attributes = attributes.push(
+            widget::row::with_capacity(3)
+                .push(
+                    on_input_maybe(
+                        widget::text_input(fl!("editor-attribute-name"), row.key.as_str()),
+                        field(true).then_some(move |t| Message::EditorAttributeKey(index, t)),
+                    )
+                    .width(Length::FillPortion(2)),
+                )
+                .push(
+                    on_input_maybe(
+                        widget::text_input(fl!("editor-attribute-value"), row.value.as_str()),
+                        field(true).then_some(move |t| Message::EditorAttributeValue(index, t)),
+                    )
+                    .width(Length::FillPortion(3)),
+                )
+                .push(widget::tooltip(
+                    widget::button::icon(widget::icon::from_name("list-remove-symbolic"))
+                        .on_press_maybe(
+                            field(true).then_some(Message::EditorRemoveAttribute(index)),
+                        ),
+                    widget::text(fl!("editor-remove-attribute")),
+                    widget::tooltip::Position::Bottom,
+                ))
+                .spacing(8)
+                .align_y(Alignment::Center),
+        );
+    }
+    attributes = attributes.push(
+        widget::button::text(fl!("editor-add-attribute"))
+            .leading_icon(widget::icon::from_name("list-add-symbolic"))
+            .on_press_maybe(field(true).then_some(Message::EditorAddAttribute)),
+    );
+    column = column.push(attributes);
+
+    // Actions
+    let deleted = editor.notice == Some(Notice::Deleted);
+    let save_label = match editor.stage {
+        Stage::Checking(_) => fl!("editor-checking"),
+        Stage::Saving => fl!("editor-saving"),
+        Stage::Editing if editor.is_new() => fl!("editor-create"),
+        Stage::Editing => fl!("editor-save"),
+    };
+    column = column.push(
+        widget::row::with_capacity(3)
+            .push(widget::space::horizontal())
+            .push(
+                widget::button::standard(fl!("cancel"))
+                    .on_press_maybe(app.write.is_none().then_some(Message::EditorCancel)),
+            )
+            .push(
+                widget::button::suggested(save_label)
+                    .on_press_maybe(field(!deleted).then_some(Message::EditorSave)),
+            )
+            .spacing(8),
+    );
+
+    column
+        .max_width(720)
+        .padding([12, 16])
+        .apply(widget::container)
+        .center_x(Length::Fill)
+        .apply(widget::scrollable)
+        .height(Length::Fill)
+        .into()
+}
+
+/// A highlighted message with optional actions; `true` marks the main one.
+fn notice_card(text: String, actions: Vec<(String, Message, bool)>) -> Element<'static, Message> {
+    let mut column = widget::column::with_capacity(2)
+        .push(widget::text::body(text).wrapping(Wrapping::WordOrGlyph))
+        .spacing(8);
+    if !actions.is_empty() {
+        let mut row = widget::row::with_capacity(actions.len()).spacing(8);
+        for (label, message, main) in actions {
+            row = row.push(if main {
+                widget::button::suggested(label).on_press(message)
+            } else {
+                widget::button::standard(label).on_press(message)
+            });
+        }
+        column = column.push(row);
+    }
+    column
+        .width(Length::Fill)
+        .apply(widget::container)
+        .padding(12)
+        .class(cosmic::theme::Container::Card)
+        .into()
+}
+
+/// Makes a text input editable only when `on_input` is given.
+fn on_input_maybe<'a>(
+    input: widget::TextInput<'a, Message>,
+    on_input: Option<impl Fn(String) -> Message + 'a>,
+) -> widget::TextInput<'a, Message> {
+    match on_input {
+        Some(f) => input.on_input(f),
+        None => input,
+    }
 }

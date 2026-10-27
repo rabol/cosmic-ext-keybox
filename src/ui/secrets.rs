@@ -390,6 +390,10 @@ impl App {
             // Run a clipboard check that was deferred while unfocused.
             self.tick()
         } else {
+            // A typed secret stays in the editor, but is masked again.
+            if let Some(editor) = self.editor.as_mut() {
+                editor.secret_hidden = true;
+            }
             if self.secret.holds_value()
                 || matches!(
                     self.secret,

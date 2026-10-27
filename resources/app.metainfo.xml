@@ -8,7 +8,8 @@
   <description>
     <p>
       Keybox shows which application credentials are stored in your desktop
-      keyring and lets you inspect a selected entry. It works with any
+      keyring and lets you inspect a selected entry. You can also create and
+      edit text entries, delete entries, and manage keyrings. It works with any
       provider of the freedesktop Secret Service, such as oo7 or GNOME Keyring.
     </p>
     <p>Keybox is not affiliated with System76.</p>
